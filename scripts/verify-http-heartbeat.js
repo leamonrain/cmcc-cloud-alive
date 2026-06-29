@@ -2,12 +2,14 @@
 'use strict';
 
 const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 const { cloudStatus, heartbeat, isHeartbeatAccepted } = require('../lib/family-api');
 
 const OFFICIAL_PROCESS_PATTERN = 'bootCypc|uSmartView|chuanyun-vdi-client|yidongyun-keepalive|server/web-server';
 
 function usage() {
-  console.error('Usage: node scripts/verify-http-heartbeat.js <userServiceId> [--duration-ms 120000] [--interval-ms 30000] [--cag-host 111.31.3.182] [--cag-port 8899] [--tcpdump 1]');
+  console.error('Usage: node scripts/verify-http-heartbeat.js <userServiceId> [--duration-ms 120000] [--interval-ms 30000] [--cag-host 111.31.3.182] [--cag-port 8899] [--tcpdump 1] [--require-sleep-proof 0] [--min-proof-duration-ms 1800000] [--report-file report.json]');
   process.exit(2);
 }
 
@@ -19,6 +21,9 @@ function parseArgs(argv) {
     cagHost: '111.31.3.182',
     cagPort: '8899',
     tcpdump: '1',
+    requireSleepProof: '0',
+    minProofDurationMs: 30 * 60 * 1000,
+    reportFile: '',
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -31,6 +36,7 @@ function parseArgs(argv) {
   }
   out.durationMs = Math.max(5000, Number(out.durationMs || 0));
   out.intervalMs = Math.max(5000, Number(out.intervalMs || 0));
+  out.minProofDurationMs = Math.max(5000, Number(out.minProofDurationMs || 0));
   return out;
 }
 
@@ -144,6 +150,16 @@ function isPoweredState(status) {
   return true;
 }
 
+function writeReportFile(file, report) {
+  if (!file) return;
+  fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o644 });
+  fs.chmodSync(file, 0o644);
+  if (process.env.SUDO_UID && process.env.SUDO_GID) {
+    fs.chownSync(file, Number(process.env.SUDO_UID), Number(process.env.SUDO_GID));
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const userServiceId = args._[0];
@@ -155,6 +171,9 @@ async function main() {
     userServiceId: String(userServiceId),
     durationMs: args.durationMs,
     intervalMs: args.intervalMs,
+    requireSleepProof: String(args.requireSleepProof) === '1',
+    minProofDurationMs: args.minProofDurationMs,
+    reportFile: args.reportFile ? String(args.reportFile) : '',
     cagHost: String(args.cagHost),
     cagPort: String(args.cagPort),
     officialProcessesBefore: [],
@@ -270,8 +289,18 @@ async function main() {
   report.sleepPreventionProof = report.httpPathOk &&
     statusSnapshots.length > 0 &&
     report.poweredStatusSnapshots === statusSnapshots.length &&
-    report.durationMs >= 30 * 60 * 1000;
-  report.ok = report.httpPathOk;
+    report.durationMs >= report.minProofDurationMs;
+  report.proofFailureReasons = [];
+  if (!report.httpPathOk) report.proofFailureReasons.push('http path verification failed');
+  if (statusSnapshots.length === 0) report.proofFailureReasons.push('no cloud status snapshots');
+  if (statusSnapshots.length > 0 && report.poweredStatusSnapshots !== statusSnapshots.length) {
+    report.proofFailureReasons.push('one or more cloud status snapshots are not powered/running');
+  }
+  if (report.durationMs < report.minProofDurationMs) {
+    report.proofFailureReasons.push(`durationMs ${report.durationMs} is below minProofDurationMs ${report.minProofDurationMs}`);
+  }
+  report.ok = report.requireSleepProof ? report.sleepPreventionProof : report.httpPathOk;
+  writeReportFile(report.reportFile, report);
 
   console.log(JSON.stringify(report, null, 2));
   process.exit(report.ok ? 0 : 1);

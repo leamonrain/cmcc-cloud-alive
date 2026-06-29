@@ -100,6 +100,16 @@ sudo node bin/cmcc-cloud-alive.js verify-http <userServiceId> \
 a long enough run. A powered-off VM can still return accepted heartbeat
 responses, so `httpPathOk=true` alone is not final keepalive proof.
 
+Use this as the final proof gate after the VM is already powered/running:
+
+```bash
+sudo node bin/cmcc-cloud-alive.js verify-http <userServiceId> \
+  --duration-ms 3600000 \
+  --interval-ms 30000 \
+  --require-sleep-proof 1 \
+  --report-file ./reports/http-proof.json
+```
+
 The heartbeat command is aligned to the family Linux client source: `4043`
 (`YUN_OTHER_LOGIN`) is treated as a hard stop, while other JSON business codes
 are recorded and the loop continues, matching the client heartbeat scheduler.

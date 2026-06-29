@@ -27,7 +27,7 @@ function usage() {
   cmcc-cloud-alive cloud-status [userServiceId]
   cmcc-cloud-alive heartbeat <userServiceId>
   cmcc-cloud-alive heartbeat-loop <userServiceId> [--interval-ms 30000] [--stop-on-error 0]
-  cmcc-cloud-alive verify-http <userServiceId> [--duration-ms 120000] [--interval-ms 30000]
+  cmcc-cloud-alive verify-http <userServiceId> [--duration-ms 120000] [--interval-ms 30000] [--require-sleep-proof 0]
   cmcc-cloud-alive token-check
   cmcc-cloud-alive import-legacy-state
   cmcc-cloud-alive state

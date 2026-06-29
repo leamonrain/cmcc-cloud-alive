@@ -159,6 +159,27 @@ sudo node bin/cmcc-cloud-alive.js verify-http 2663816 \
   --duration-ms 15000 --interval-ms 5000
 ```
 
+For final HTTP-route proof, the command must be run with a powered/running VM,
+longer than the expected idle window, and with the strict proof gate enabled:
+
+```bash
+sudo node bin/cmcc-cloud-alive.js verify-http 2663816 \
+  --duration-ms 3600000 \
+  --interval-ms 30000 \
+  --require-sleep-proof 1 \
+  --report-file ./reports/http-proof.json
+```
+
+In strict mode the command exits non-zero unless:
+
+```text
+httpPathOk=true
+all cloud status snapshots are powered/running
+durationMs >= minProofDurationMs
+no official client process is started
+no CAG 8899 packets/connections are observed
+```
+
 Observed on 2026-06-30:
 
 ```json

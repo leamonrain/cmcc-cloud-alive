@@ -4,5 +4,6 @@ npm-debug.log*
 .DS_Store
 coverage/
 captures/
+reports/
 *.pcap
 *.pcapng
