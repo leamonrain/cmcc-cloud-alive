@@ -10,9 +10,11 @@ const {
   isHeartbeatAccepted,
   isOtherLoginResponse,
   isSuccessResponse,
+  maskFirmAuth,
   maskPhone,
   maskState,
   summarizeCloud,
+  summarizeFirmAuth,
 } = require('../lib/family-api');
 
 assert.strictEqual(maskPhone('18701080357'), '187****0357');
@@ -56,6 +58,41 @@ assert.deepStrictEqual(summarizeCloud(cloudList[1]), {
   consumeTime: undefined,
   shutDownInterval: undefined,
 });
+const firmAuth = {
+  vmId: 'vm-1',
+  spuCode: 'zte-cloud-pc',
+  vmcIp: '10.10.2.1',
+  vmcPort: 8443,
+  cagIp: '111.31.3.182',
+  cagPort: 8899,
+  vmUserName: '6573655444aff86f',
+  vmPassword: 'secret-password-value',
+  scAuthCode: 'secret-auth-code',
+  bizCode: 'secret-biz-code',
+  connectId: 'connect-id-value',
+};
+assert.deepStrictEqual(summarizeFirmAuth(firmAuth), {
+  vmId: 'vm-1',
+  spuCode: 'zte-cloud-pc',
+  vmcIp: '10.10.2.1',
+  vmcPort: 8443,
+  cagIp: '111.31.3.182',
+  cagPort: 8899,
+  scgIp: '',
+  scgTcpPort: '',
+  scgUdpPort: '',
+  hasVmUserName: true,
+  hasVmPassword: true,
+  hasScAuthCode: true,
+  hasBizCode: true,
+  hasConnectId: true,
+});
+const maskedFirmAuth = maskFirmAuth(firmAuth);
+assert.strictEqual(maskedFirmAuth.vmPassword, 'secr***alue');
+assert.strictEqual(maskedFirmAuth.scAuthCode, 'secr***code');
+assert.strictEqual(maskedFirmAuth.bizCode, 'secr***code');
+assert.strictEqual(maskedFirmAuth.connectId, 'conn***alue');
+assert.strictEqual(maskedFirmAuth.vmUserName, firmAuth.vmUserName);
 assert.strictEqual(assertBusinessOk({ code: 2000, msg: 'SUCCESS' }, 'ok').code, 2000);
 assert.throws(
   () => assertBusinessOk({ code: 4043, msg: 'YUN_OTHER_LOGIN', businessCode: '4043' }, 'heartbeat'),

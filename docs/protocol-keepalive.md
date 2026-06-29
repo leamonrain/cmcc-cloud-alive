@@ -47,6 +47,44 @@ bizCode
 
 On the tested account, `getFirmAuth` returns `bizCode`, CAG target `111.31.3.182:8899`, and an SDK credential carried as `vmPassword`; `scgIp/scgTcpPort` are empty. This differs from the macOS CEM chain described in the blog, so protocol mode must either prove that Linux `getFirmAuth` is equivalent to `getConnectInfo`, or add the CEM chain when required by another client variant.
 
+The new project exposes this as a redacted, no-SDK command:
+
+```bash
+sudo node bin/cmcc-cloud-alive.js firm-auth 2663816
+```
+
+Observed on 2026-06-30:
+
+```json
+{
+  "summary": {
+    "vmId": "163c68a9-5e1e-4cba-b9bb-68ad599a8abf",
+    "spuCode": "zte-cloud-pc",
+    "vmcIp": "10.10.2.243",
+    "vmcPort": 8443,
+    "cagIp": "111.31.3.182",
+    "cagPort": 8899,
+    "scgIp": "",
+    "scgTcpPort": "",
+    "hasVmUserName": true,
+    "hasVmPassword": true,
+    "hasBizCode": true
+  },
+  "route": {
+    "route": "linux-cag",
+    "source": "cag",
+    "host": "111.31.3.182",
+    "port": 8899
+  }
+}
+```
+
+After this command, process and socket checks showed no official client process
+and no open connection to `111.31.3.182:8899`. This confirms `getFirmAuth` is
+safe as a protocol-material probe, but it is not a keepalive signal. The
+returned redacted route remains the Linux CAG/ZIME route, not the blog's SCG
+10800 route.
+
 ## Family HTTP Heartbeat Candidate
 
 The installed family Linux client was audited locally from:

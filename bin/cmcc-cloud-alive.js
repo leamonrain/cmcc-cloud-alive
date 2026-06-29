@@ -7,16 +7,20 @@ const {
   cachedCloudList,
   cloudStatus,
   FamilyApiError,
+  getFirmAuth,
   heartbeat,
   importLegacyState,
   isHeartbeatAccepted,
   listClouds,
   loadState,
+  maskFirmAuth,
   maskState,
   smsLogin,
   smsSend,
+  summarizeFirmAuth,
   tokenCheck,
 } = require('../lib/family-api');
+const { createProtocolProbeReport } = require('../lib/protocol');
 
 function usage() {
   console.log(`Usage:
@@ -25,6 +29,7 @@ function usage() {
   cmcc-cloud-alive list
   cmcc-cloud-alive list-cache
   cmcc-cloud-alive cloud-status [userServiceId]
+  cmcc-cloud-alive firm-auth <userServiceId>
   cmcc-cloud-alive heartbeat <userServiceId>
   cmcc-cloud-alive heartbeat-loop <userServiceId> [--interval-ms 30000] [--stop-on-error 0]
   cmcc-cloud-alive verify-http <userServiceId> [--duration-ms 120000] [--interval-ms 30000] [--wait-powered-ms 0] [--require-sleep-proof 0]
@@ -136,6 +141,19 @@ async function main(argv = process.argv.slice(2)) {
   if (cmd === 'cloud-status') {
     const userServiceId = await resolveCachedUserServiceId(args[0]?.startsWith('--') ? '' : args[0]);
     console.log(JSON.stringify(await cloudStatus(userServiceId), null, 2));
+    return;
+  }
+  if (cmd === 'firm-auth') {
+    const userServiceId = await resolveCachedUserServiceId(args[0]?.startsWith('--') ? '' : args[0]);
+    const auth = await getFirmAuth(userServiceId);
+    const protocolReport = createProtocolProbeReport({ userServiceId, auth });
+    console.log(JSON.stringify({
+      userServiceId,
+      summary: summarizeFirmAuth(auth),
+      route: protocolReport.route,
+      authMaterial: protocolReport.authMaterial,
+      auth: maskFirmAuth(auth),
+    }, null, 2));
     return;
   }
   if (cmd === 'heartbeat') {

@@ -73,6 +73,7 @@ node bin/cmcc-cloud-alive.js sms-send <phone>
 node bin/cmcc-cloud-alive.js sms-login <phone> <code>
 node bin/cmcc-cloud-alive.js list
 node bin/cmcc-cloud-alive.js cloud-status <userServiceId>
+node bin/cmcc-cloud-alive.js firm-auth <userServiceId>
 ```
 
 Run the HTTP heartbeat candidate once:
@@ -99,6 +100,10 @@ sudo node bin/cmcc-cloud-alive.js verify-http <userServiceId> \
 `sleepPreventionProof` for the stronger claim that the VM stayed powered during
 a long enough run. A powered-off VM can still return accepted heartbeat
 responses, so `httpPathOk=true` alone is not final keepalive proof.
+
+`firm-auth` calls the family `/cc/getFirmAuth/v1` endpoint and prints a redacted
+protocol route summary. It does not start the official client or connect to
+CAG/SPICE.
 
 Use this as the final proof gate after the VM is already powered/running:
 
