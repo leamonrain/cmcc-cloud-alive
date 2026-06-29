@@ -20,7 +20,7 @@ const {
   summarizeFirmAuth,
   tokenCheck,
 } = require('../lib/family-api');
-const { createProtocolProbeReport } = require('../lib/protocol');
+const { createProtocolProbeReport, probeProtocolRoute } = require('../lib/protocol');
 
 function usage() {
   console.log(`Usage:
@@ -30,6 +30,7 @@ function usage() {
   cmcc-cloud-alive list-cache
   cmcc-cloud-alive cloud-status [userServiceId]
   cmcc-cloud-alive firm-auth <userServiceId>
+  cmcc-cloud-alive protocol-probe <userServiceId> [--tls-probe 1] [--timeout-ms 5000]
   cmcc-cloud-alive heartbeat <userServiceId>
   cmcc-cloud-alive heartbeat-loop <userServiceId> [--interval-ms 30000] [--stop-on-error 0]
   cmcc-cloud-alive verify-http <userServiceId> [--duration-ms 120000] [--interval-ms 30000] [--wait-powered-ms 0] [--require-sleep-proof 0]
@@ -153,6 +154,24 @@ async function main(argv = process.argv.slice(2)) {
       route: protocolReport.route,
       authMaterial: protocolReport.authMaterial,
       auth: maskFirmAuth(auth),
+    }, null, 2));
+    return;
+  }
+  if (cmd === 'protocol-probe') {
+    const userServiceId = await resolveCachedUserServiceId(args[0]?.startsWith('--') ? '' : args[0]);
+    const auth = await getFirmAuth(userServiceId);
+    const tlsProbe = String(readOption(args, '--tls-probe', '1')) !== '0';
+    const timeoutMs = Number(readOption(args, '--timeout-ms', 5000));
+    const report = await probeProtocolRoute({ userServiceId, auth, tlsProbe, timeoutMs });
+    console.log(JSON.stringify({
+      ...report,
+      authSummary: summarizeFirmAuth(auth),
+      safe: {
+        ...report.safe,
+        sdkStarted: false,
+        desktopConnectSent: false,
+        spiceAuthSent: false,
+      },
     }, null, 2));
     return;
   }

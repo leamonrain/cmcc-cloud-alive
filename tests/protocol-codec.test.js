@@ -151,9 +151,26 @@ const probeReport = createProtocolProbeReport({
   env: {},
 });
 assert.strictEqual(probeReport.route.route, 'linux-cag');
+assert.strictEqual(probeReport.connectInfo.accessCredentialPresent, true);
+assert.strictEqual(probeReport.connectInfo.accessCredentialSource, 'scAuthCode');
+assert.strictEqual(probeReport.connectInfo.vmPasswordAsCredential, false);
 assert.strictEqual(probeReport.safe.sdkStarted, false);
 assert.strictEqual(probeReport.safe.desktopConnectSent, false);
 assert.ok(probeReport.cemProbe.missing.includes('YDY_CEM_BASE_URL'));
+const cagPasswordProbeReport = createProtocolProbeReport({
+  userServiceId: '2663816',
+  auth: {
+    vmId: 'vm-123',
+    vmPassword: 'sdk-password',
+    cagIp: '111.31.3.182',
+    cagPort: 8899,
+  },
+  env: {},
+});
+assert.strictEqual(cagPasswordProbeReport.connectInfo.accessCredentialPresent, true);
+assert.strictEqual(cagPasswordProbeReport.connectInfo.accessCredentialSource, 'vmPassword');
+assert.strictEqual(cagPasswordProbeReport.connectInfo.scAuthCodePresent, false);
+assert.strictEqual(cagPasswordProbeReport.connectInfo.vmPasswordAsCredential, true);
 
 const { publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 1024 });
 const cemEncrypted = encryptCemPayload({ code: 'sc-auth' }, publicKey.export({ type: 'spki', format: 'pem' }));

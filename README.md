@@ -74,6 +74,7 @@ node bin/cmcc-cloud-alive.js sms-login <phone> <code>
 node bin/cmcc-cloud-alive.js list
 node bin/cmcc-cloud-alive.js cloud-status <userServiceId>
 node bin/cmcc-cloud-alive.js firm-auth <userServiceId>
+node bin/cmcc-cloud-alive.js protocol-probe <userServiceId> --tls-probe 1
 ```
 
 Run the HTTP heartbeat candidate once:
@@ -104,6 +105,10 @@ responses, so `httpPathOk=true` alone is not final keepalive proof.
 `firm-auth` calls the family `/cc/getFirmAuth/v1` endpoint and prints a redacted
 protocol route summary. It does not start the official client or connect to
 CAG/SPICE.
+
+`protocol-probe` additionally performs a safe CAG TCP TLS handshake when
+`--tls-probe 1` is used. It does not send desktop auth, SPICE auth, or SDK
+socket commands.
 
 Use this as the final proof gate after the VM is already powered/running:
 

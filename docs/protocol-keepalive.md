@@ -85,6 +85,55 @@ safe as a protocol-material probe, but it is not a keepalive signal. The
 returned redacted route remains the Linux CAG/ZIME route, not the blog's SCG
 10800 route.
 
+The route can also be probed without sending desktop auth:
+
+```bash
+sudo node bin/cmcc-cloud-alive.js protocol-probe 2663816 --tls-probe 1 --timeout-ms 5000
+```
+
+Observed CAG TLS result on 2026-06-30:
+
+```json
+{
+  "route": {
+    "route": "linux-cag",
+    "host": "111.31.3.182",
+    "port": 8899
+  },
+  "connectInfo": {
+    "accessCredentialPresent": true,
+    "accessCredentialSource": "vmPassword",
+    "scAuthCodePresent": false,
+    "vmPasswordAsCredential": true,
+    "bizCodePresent": true
+  },
+  "safe": {
+    "sdkStarted": false,
+    "desktopConnectSent": false,
+    "spiceAuthSent": false
+  },
+  "cagTcpTls": {
+    "protocol": "TLSv1.2",
+    "cipher": {
+      "standardName": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+    },
+    "peerSubject": {
+      "C": "CN",
+      "ST": "JS",
+      "O": "ZTE",
+      "OU": "SOFT",
+      "CN": "DC"
+    },
+    "fingerprint256": "18:74:AB:57:07:03:11:D9:CB:4C:62:43:54:FE:A4:E9:69:E6:B4:EE:D6:EC:29:21:03:42:39:5B:4E:6D:CA:83"
+  }
+}
+```
+
+Follow-up process/socket checks again showed no official client process and no
+remaining open connection to `111.31.3.182:8899`. This safely proves the gateway
+is a reachable TLS endpoint, but still does not send the CAG/ZIME auth/control
+sequence.
+
 ## Family HTTP Heartbeat Candidate
 
 The installed family Linux client was audited locally from:
