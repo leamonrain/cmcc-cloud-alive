@@ -9,5 +9,16 @@ services:
       - ./captures:/captures:ro
       - cmcc-cloud-alive-state:/state
 
+  cmcc-cloud-alive-loop:
+    profiles: ["loop"]
+    build: .
+    image: cmcc-cloud-alive:local
+    command: ["heartbeat-loop", "${CMCC_USER_SERVICE_ID:-}", "--interval-ms", "${CMCC_INTERVAL_MS:-30000}"]
+    restart: unless-stopped
+    environment:
+      CMCC_ALIVE_STATE: /state/state.json
+    volumes:
+      - cmcc-cloud-alive-state:/state
+
 volumes:
   cmcc-cloud-alive-state:

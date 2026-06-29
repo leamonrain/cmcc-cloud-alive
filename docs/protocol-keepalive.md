@@ -97,6 +97,18 @@ This is intentionally different from login/list endpoints, where non-2000
 business codes remain failures and must be surfaced directly instead of being
 converted into network/failover errors.
 
+Long-running `heartbeat-loop` mirrors that endpoint-specific behavior:
+
+```text
+4043 / YUN_OTHER_LOGIN -> stop and surface the response
+network/fetch/http transient error -> log, count failure, retry next interval
+other JSON response -> record code/msg/businessCode and schedule next interval
+```
+
+This is required for a real keepalive loop. A temporary `fetch failed` must not
+turn into "保活失败，已自动停止" unless the operator explicitly uses
+`--stop-on-error 1` for debugging.
+
 Local verification on 2026-06-30 using the existing family account state:
 
 ```bash
@@ -120,6 +132,25 @@ traffic. It is a strong candidate for a non-occupying family-edition HTTP
 keepalive, but it is not yet final proof. The remaining proof is a long-duration
 run showing that this HTTP heartbeat alone prevents sleep and does not kick an
 active official client session.
+
+Additional short-loop verification on 2026-06-30:
+
+```text
+host:
+  timeout 12s sudo node bin/cmcc-cloud-alive.js heartbeat-loop 2663816 --interval-ms 5000
+  observed 3 accepted heartbeat responses at 5-second cadence
+
+docker:
+  timeout 12s docker run --rm \
+    -v /etc/yidongyun/state.json:/etc/yidongyun/state.json:ro \
+    cmcc-cloud-alive:local heartbeat-loop 2663816 --interval-ms 5000
+  observed 3 accepted heartbeat responses at 5-second cadence
+```
+
+Both paths produced full Asia/Shanghai timestamps and elapsed-duration logs.
+The Docker path used a read-only legacy state bind mount for verification only;
+normal container use should log in through `sms-send` and `sms-login` into the
+named state volume.
 
 ## Upstream Repository Audit
 

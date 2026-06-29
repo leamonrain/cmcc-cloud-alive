@@ -89,6 +89,8 @@ node bin/cmcc-cloud-alive.js heartbeat-loop <userServiceId> --interval-ms 30000
 The heartbeat command is aligned to the family Linux client source: `4043`
 (`YUN_OTHER_LOGIN`) is treated as a hard stop, while other JSON business codes
 are recorded and the loop continues, matching the client heartbeat scheduler.
+Transient network/API exceptions are logged and retried by default in
+`heartbeat-loop`; pass `--stop-on-error 1` only for debugging.
 On the current test account, `/cc/cloudPc/heartbeat/v2` returned:
 
 ```json
@@ -141,6 +143,25 @@ docker compose run --rm cmcc-cloud-alive sms-send <phone>
 docker compose run --rm cmcc-cloud-alive sms-login <phone> <code>
 docker compose run --rm cmcc-cloud-alive list
 docker compose run --rm cmcc-cloud-alive heartbeat-loop <userServiceId> --interval-ms 30000
+```
+
+For local migration testing, an existing legacy state file can be mounted
+read-only instead of copying secrets into the image:
+
+```bash
+docker run --rm \
+  -v /etc/yidongyun/state.json:/etc/yidongyun/state.json:ro \
+  cmcc-cloud-alive:local heartbeat <userServiceId>
+```
+
+Run the loop persistently with Docker restart policy:
+
+```bash
+CMCC_USER_SERVICE_ID=<userServiceId> CMCC_INTERVAL_MS=30000 \
+  docker compose --profile loop up -d cmcc-cloud-alive-loop
+
+docker compose logs -f cmcc-cloud-alive-loop
+docker compose --profile loop stop cmcc-cloud-alive-loop
 ```
 
 ## Development Notes

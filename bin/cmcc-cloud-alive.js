@@ -5,6 +5,7 @@ const { spawnSync } = require('child_process');
 const path = require('path');
 const {
   cachedCloudList,
+  FamilyApiError,
   heartbeat,
   importLegacyState,
   isHeartbeatAccepted,
@@ -23,7 +24,7 @@ function usage() {
   cmcc-cloud-alive list
   cmcc-cloud-alive list-cache
   cmcc-cloud-alive heartbeat <userServiceId>
-  cmcc-cloud-alive heartbeat-loop <userServiceId> [--interval-ms 30000]
+  cmcc-cloud-alive heartbeat-loop <userServiceId> [--interval-ms 30000] [--stop-on-error 0]
   cmcc-cloud-alive token-check
   cmcc-cloud-alive import-legacy-state
   cmcc-cloud-alive state
@@ -76,6 +77,25 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function formatDuration(ms) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}小时${minutes}分${seconds}秒`;
+  if (minutes > 0) return `${minutes}分${seconds}秒`;
+  return `${seconds}秒`;
+}
+
+function errorSummary(err) {
+  if (err instanceof FamilyApiError || err.name === 'FamilyApiError') {
+    const code = err.code === undefined ? '' : ` code=${err.code}`;
+    const businessCode = err.businessCode === undefined ? '' : ` businessCode=${err.businessCode}`;
+    return `${err.kind || 'api'}${code}${businessCode} ${err.message}`.trim();
+  }
+  return err?.message || String(err);
+}
+
 async function resolveCachedUserServiceId(value) {
   if (value) return value;
   const cached = cachedCloudList();
@@ -126,16 +146,30 @@ async function main(argv = process.argv.slice(2)) {
   if (cmd === 'heartbeat-loop') {
     const userServiceId = await resolveCachedUserServiceId(args[0]?.startsWith('--') ? '' : args[0]);
     const intervalMs = Math.max(5000, Number(readOption(args, '--interval-ms', 30000)));
+    const stopOnError = String(readOption(args, '--stop-on-error', '0')) === '1';
     let stopped = false;
     process.on('SIGINT', () => { stopped = true; });
     process.on('SIGTERM', () => { stopped = true; });
-    console.log(`heartbeat loop started: userServiceId=${userServiceId} intervalMs=${intervalMs}`);
+    console.log(`heartbeat loop started: userServiceId=${userServiceId} intervalMs=${intervalMs} stopOnError=${stopOnError}`);
     let count = 0;
+    let failures = 0;
+    const loopStartedAt = Date.now();
     while (!stopped) {
       count++;
       const started = Date.now();
-      const response = await heartbeat(userServiceId);
-      console.log(`[${formatTime()}] [${count}] heartbeat accepted=${isHeartbeatAccepted(response)} code=${response.code} msg=${response.msg || ''} businessCode=${response.businessCode || ''}`);
+      try {
+        const response = await heartbeat(userServiceId);
+        failures = 0;
+        console.log(`[${formatTime()}] [${count}] 保活响应: accepted=${isHeartbeatAccepted(response)} 持续=${formatDuration(Date.now() - loopStartedAt)} code=${response.code} msg=${response.msg || ''} businessCode=${response.businessCode || ''}`);
+      } catch (err) {
+        failures++;
+        console.error(`[${formatTime()}] [${count}] 保活异常: failures=${failures} 持续=${formatDuration(Date.now() - loopStartedAt)} ${errorSummary(err)}`);
+        if (err?.response) console.error(JSON.stringify(err.response));
+        if (err instanceof FamilyApiError && (Number(err.code) === 4043 || Number(err.businessCode) === 4043)) {
+          throw err;
+        }
+        if (stopOnError) throw err;
+      }
       const elapsed = Date.now() - started;
       await wait(Math.max(0, intervalMs - elapsed));
     }
