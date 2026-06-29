@@ -1,0 +1,13 @@
+services:
+  cmcc-cloud-alive:
+    build: .
+    image: cmcc-cloud-alive:local
+    command: ["help"]
+    environment:
+      CMCC_ALIVE_STATE: /state/state.json
+    volumes:
+      - ./captures:/captures:ro
+      - cmcc-cloud-alive-state:/state
+
+volumes:
+  cmcc-cloud-alive-state:

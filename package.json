@@ -1,0 +1,18 @@
+{
+  "name": "cmcc-cloud-alive",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Protocol-level keepalive research and implementation for China Mobile Cloud PC.",
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "cmcc-cloud-alive": "bin/cmcc-cloud-alive.js"
+  },
+  "scripts": {
+    "check": "node --check bin/cmcc-cloud-alive.js && node --check scripts/analyze-cag-transport.js && node --check scripts/analyze-loopback-spice.js && node --check lib/family-api.js && node --check lib/protocol/zte-cag.js && node --check lib/protocol/spice.js && node --check lib/protocol/local-spice.js",
+    "test": "npm run check && node tests/protocol-codec.test.js && node tests/family-api.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
