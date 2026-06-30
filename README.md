@@ -118,6 +118,18 @@ Run the HTTP heartbeat candidate once:
 node bin/cmcc-cloud-alive.js heartbeat <userServiceId>
 ```
 
+Generate the static reverse-engineering evidence first:
+
+```bash
+node bin/cmcc-cloud-alive.js audit-http-source
+```
+
+This scans the recovered family client sources and reports the ordinary cloud
+PC heartbeat constant, the separate time-zone `v1` heartbeat branch, the
+`userServiceId` request body, the `4043` stop condition, and the reschedule
+logic. It is the source-audit half of the Hansiy-style workflow; packet capture
+still decides the final runtime claim.
+
 Run it continuously:
 
 ```bash

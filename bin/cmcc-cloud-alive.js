@@ -42,6 +42,7 @@ function usage() {
   cmcc-cloud-alive cag-handshake <userServiceId> [--send-preflight 0] [--send-connect-info 0] [--send-ready 0] [--timeout-ms 5000] [--base-flags N] [--transport-flag N] [--address-family-flag N]
   cmcc-cloud-alive heartbeat <userServiceId>
   cmcc-cloud-alive heartbeat-loop <userServiceId> [--interval-ms official] [--stop-on-error 0]
+  cmcc-cloud-alive audit-http-source [source-file ...]
   cmcc-cloud-alive verify-http <userServiceId> [--duration-ms 120000] [--interval-ms official] [--wait-powered-ms 0] [--require-sleep-proof 0]
   cmcc-cloud-alive token-check
   cmcc-cloud-alive import-legacy-state
@@ -352,6 +353,7 @@ async function main(argv = process.argv.slice(2)) {
     return;
   }
   if (cmd === 'verify-http') return runNodeScript('verify-http-heartbeat.js', args);
+  if (cmd === 'audit-http-source') return runNodeScript('audit-family-http-source.js', args);
   if (cmd === 'test') return runNodeScript('../tests/protocol-codec.test.js', []);
   usage();
   process.exit(2);
