@@ -97,8 +97,3 @@ def run(
         )
     else:
         raise core.CmccError(f"unknown keepalive strategy: {strategy}")
-
-    if isinstance(result, dict):
-        result = dict(result)
-        result["strategy"] = info
-    return result

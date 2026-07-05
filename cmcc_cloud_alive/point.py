@@ -27,7 +27,6 @@ def point_event(event_name, data=None, state_path=None):
     method = "POST"
     path = "/custom/cc/v1"
     headers = core.headers(state, path, method, encrypted)
-    url = "https://point.soho.komect.com/point" + path
     payload = core.json_dumps_compact(encrypted).encode("utf-8")
     headers["Content-Length"] = str(len(payload))
     # point.soho.komect.com is case-sensitive for X-SOHO-ClientVersion.

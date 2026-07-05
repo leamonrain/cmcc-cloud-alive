@@ -6030,7 +6030,6 @@ def _extract_ss_peers(ss_log_text):
         if "users:((\"uSmartView_VDI_\"" in line:
             parts = line.split()
             if len(parts) >= 6:
-                local = parts[4]
                 peer = parts[5]
                 if peer.startswith("127.0.0.1:"):
                     vdi_loopback_ports[peer] += 1

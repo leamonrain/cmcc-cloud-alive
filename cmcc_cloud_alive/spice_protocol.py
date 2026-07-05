@@ -221,7 +221,6 @@ def parse_rsa_public_key_der(der):
 
 def mgf1(seed, length, hash_name="sha1"):
     seed = bytes(seed)
-    h_len = hashlib.new(hash_name).digest_size
     out = bytearray()
     counter = 0
     while len(out) < length:
