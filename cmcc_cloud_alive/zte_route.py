@@ -29,7 +29,10 @@ from .zte_security import (
 from .zte_raw_spice import (
     BuildZTERawDisplayInit,
     BuildZTERawInputInit,
+    RawState,
     RawSubChannelHandshake,
+    ReadRawMessage,
+    WriteRawMessage,
     keepaliveRawSpiceLoop,
     rawMessageWithPrefix,
 )
@@ -491,3 +494,106 @@ def _async_query_connect_str(client: ZTEClient, access_token: str, *,
             return connect_str
         time.sleep(interval)
     return ""
+
+
+# ---------------------------------------------------------------------------
+# ZTE raw SPICE sub-channel orchestration (P10 port of B's
+# sendZTESubchannelREDQs / authenticateZTESubchannels / keepZTESubchannelAlive)
+# ---------------------------------------------------------------------------
+# (link_id, channel_type, channel_id) — mirrors Go sendZTESubchannelREDQs.
+# The main link holds id 1; sub-links opened afterwards get ids 2..8.
+_ZTE_SUBCHANNEL_REDQS = [
+    (3, 4, 1),
+    (2, 6, 0),
+    (4, 5, 0),
+    (6, 3, 0),
+    (7, 2, 0),
+    (8, 4, 0),
+    (5, 2, 1),
+]
+
+# link_id -> init-message builder written once after a successful auth
+# (mirrors Go startZTESubchannelKeepalive: link 6 = InputInit,
+#  links 5 & 7 = DisplayInit).
+_ZTE_SUBCHANNEL_INIT = {
+    6: BuildZTERawInputInit,
+    5: BuildZTERawDisplayInit,
+    7: BuildZTERawDisplayInit,
+}
+
+
+def setup_zte_subchannels(mux, params, main_link, spice_session_id, *, timeout=8.0):
+    """Open + authenticate the ZTE raw SPICE sub-channels (P10-006..009).
+
+    Opens ``len(_ZTE_SUBCHANNEL_REDQS)`` sub-links on ``mux`` (they receive
+    ids 2..8 because the main link already holds id 1) and runs
+    :func:`RawSubChannelHandshake` on each, reusing the main link's
+    linkUUID / traceID / redqSpanID.  For every authenticated link the
+    Go-mandated init message is written once.
+
+    ``main_link`` is a :class:`~cmcc_cloud_alive.zte_cag_mux.CAGMuxLink` and
+    must expose ``link_uuid``, ``trace_id`` and ``redq_span_id``; ``params``
+    must expose ``key`` and ``vm_id``.
+
+    Returns ``(links, authed)``: ``links`` maps link_id -> CAGMuxLink and
+    ``authed`` is the set of authenticated link ids.
+    """
+    links = {}
+    for _ in range(len(_ZTE_SUBCHANNEL_REDQS)):
+        link = mux.open_link(
+            params, trace_id=main_link.trace_id, span_id=main_link.redq_span_id
+        )
+        links[link.link_id] = link
+
+    authed = set()
+    for link_id, channel_type, channel_id in _ZTE_SUBCHANNEL_REDQS:
+        link = links.get(link_id)
+        if link is None:
+            continue
+        link.settimeout(timeout)
+        ok = RawSubChannelHandshake(
+            link,
+            params.key,
+            params.vm_id,
+            main_link.link_uuid,
+            main_link.trace_id,
+            main_link.redq_span_id,
+            spice_session_id,
+            channel_type,
+            channel_id,
+        )
+        if ok:
+            authed.add(link_id)
+            init_builder = _ZTE_SUBCHANNEL_INIT.get(link_id)
+            if init_builder is not None:
+                WriteRawMessage(link, 1, init_builder())
+    return links, authed
+
+
+def keep_zte_subchannel_alive(link, link_id=0, *, read_timeout=2.0, stop_event=None):
+    """Per-link raw SPICE keepalive (P10 port of B's keepZTESubchannelAlive).
+
+    Reads messages from ``link`` and auto-replies (ping/pong, mouse-mode ack,
+    0x74) until the link errors out or ``stop_event`` is set.  Each link uses
+    its own :class:`RawState` so serials / suffixes never cross-contaminate.
+    Transient read timeouts are tolerated (the SPICE server pings regularly);
+    any hard read/write error terminates the loop for this link.
+    """
+    import socket as _socket
+
+    state = RawState()
+    link.settimeout(read_timeout)
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            break
+        try:
+            msg_type, payload = state.ReadMessage(link, read_timeout)
+        except (_socket.timeout, TimeoutError):
+            continue
+        except Exception:  # noqa: BLE001 - hard error: stop this link
+            break
+        try:
+            state.AutoReply(link, msg_type, payload)
+        except Exception:  # noqa: BLE001 - write error: stop this link
+            break
+    return link_id
