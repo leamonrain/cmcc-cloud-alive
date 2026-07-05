@@ -16,6 +16,7 @@ SCG binary, no real ZTE CAG. The tests assert:
 import argparse
 import io
 import json
+import os
 import unittest
 from unittest import mock
 
@@ -307,6 +308,173 @@ class ProductKeepaliveZteTests(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertIn("cag", report["error"])
         self.assertNotEqual(report["nextStep"], "")
+
+
+class ProductZteSubcheckTests(unittest.TestCase):
+    """P11-005/006/007: ZTE layered diagnostic sub-checks."""
+
+    def _zte_route(self):
+        return ProductRoute(kind=RouteKind.ZTE, reason="ZTE fields complete",
+                            userServiceId="us-zte-001", vmId="vm-zte-001")
+
+    def _run_subcheck(self, cmd_func, extra_patches, material,
+                      env_extra=None):
+        route = self._zte_route()
+        patches = _patch_plumbing(ZTE_AUTH, route, summary={"kind": "zte"})
+        patches.append(mock.patch("cmcc_cloud_alive.zte_route.run_material",
+                                  return_value=material))
+        patches.append(mock.patch("cmcc_cloud_alive.zte_route.ZTEFirmAuth"))
+        patches.extend(extra_patches)
+        cap_patcher, holder = _capture_report()
+        env_patcher = None
+        if env_extra:
+            env_patcher = mock.patch.dict(os.environ, env_extra, clear=False)
+            patches.append(env_patcher)
+        for p in patches:
+            p.start()
+        try:
+            cap_patcher.start()
+            cmd_func(_make_args())
+        finally:
+            cap_patcher.stop()
+            for p in reversed(patches):
+                p.stop()
+        return holder["report"]
+
+    # --- P11-005: material-check ---
+
+    def test_material_check_success(self):
+        material = MaterialReport(stage="zte-material", ok=True, error="",
+                                  next_step="", has_token=True,
+                                  desktop_count=1, target_desktop_found=True,
+                                  has_connect_str=True,
+                                  connect_str="dummy-connect-str")
+        report = self._run_subcheck(
+            cli_main.cmd_product_zte_material_check, [], material)
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["stage"], "zte-material")
+        self.assertEqual(report["error"], "")
+        blob = json.dumps(report)
+        for secret in SENSITIVE_VALUES:
+            self.assertNotIn(secret, blob)
+
+    def test_material_check_failure_surfaces_error(self):
+        material = MaterialReport(stage="zte-cag", ok=False,
+                                  error="cag unreachable", next_step="retry")
+        report = self._run_subcheck(
+            cli_main.cmd_product_zte_material_check, [], material)
+        self.assertFalse(report["ok"])
+        self.assertIn("cag", report["error"])
+
+    # --- P11-006: tcp-check (pre-dial) ---
+
+    def test_tcp_check_success(self):
+        material = MaterialReport(stage="zte-material", ok=True, error="",
+                                  next_step="", has_token=True,
+                                  desktop_count=1, target_desktop_found=True,
+                                  has_connect_str=True,
+                                  connect_str="dummy-connect-str")
+        outer = mock.Mock()
+        outer.address = "10.0.0.1:443"
+        extra = [
+            mock.patch("cmcc_cloud_alive.zte_connect_params"
+                       ".decode_connect_params", return_value=mock.Mock()),
+            mock.patch("cmcc_cloud_alive.zte_connect_params"
+                       ".inner_from_connect_params", return_value=mock.Mock()),
+            mock.patch("cmcc_cloud_alive.zte_route.outer_from_firm",
+                       return_value=outer),
+        ]
+        report = self._run_subcheck(
+            cli_main.cmd_product_zte_tcp_check, extra, material)
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["stage"], "zte-tcp-check")
+        self.assertEqual(report["error"], "")
+
+    def test_tcp_check_missing_connect_str_reports_error(self):
+        material = MaterialReport(stage="zte-material", ok=True, error="",
+                                  next_step="", has_connect_str=False,
+                                  connect_str="")
+        report = self._run_subcheck(
+            cli_main.cmd_product_zte_tcp_check, [], material)
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["stage"], "zte-tcp-check")
+
+    # --- P11-007: display-check (pre-DisplayInit) ---
+
+    def test_display_check_success(self):
+        material = MaterialReport(stage="zte-material", ok=True, error="",
+                                  next_step="", has_token=True,
+                                  desktop_count=1, target_desktop_found=True,
+                                  has_connect_str=True,
+                                  connect_str="dummy-connect-str")
+        outer = mock.Mock()
+        outer.address = "10.0.0.1:443"
+        tls_conn = mock.Mock()
+        main_link = mock.Mock()
+        main_link.link_uuid = "lu"
+        main_link.trace_id = "ti"
+        main_link.redq_span_id = "rs"
+        raw_result = mock.Mock()
+        raw_result.OK = True
+        extra = [
+            mock.patch("cmcc_cloud_alive.zte_connect_params"
+                       ".decode_connect_params", return_value=mock.Mock()),
+            mock.patch("cmcc_cloud_alive.zte_connect_params"
+                       ".inner_from_connect_params", return_value=mock.Mock()),
+            mock.patch("cmcc_cloud_alive.zte_route.outer_from_firm",
+                       return_value=outer),
+            mock.patch("cmcc_cloud_alive.zte_cag.dial_cag_tcp_tls",
+                       return_value=(tls_conn, mock.Mock())),
+            mock.patch("cmcc_cloud_alive.zte_cag_mux.CAGMux"),
+            mock.patch("cmcc_cloud_alive.zte_cag_mux.open_cag_mux_link",
+                       return_value=main_link),
+            mock.patch("cmcc_cloud_alive.zte_route.RawMainHandshake",
+                       return_value=raw_result),
+        ]
+        report = self._run_subcheck(
+            cli_main.cmd_product_zte_display_check, extra, material,
+            env_extra={"CCK_ZTE_CAG_AUTH_TEMPLATE_HEX": "deadbeef"})
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["stage"], "zte-display-check")
+        self.assertEqual(report["error"], "")
+
+    def test_display_check_handshake_failure_reports_error(self):
+        material = MaterialReport(stage="zte-material", ok=True, error="",
+                                  next_step="", has_token=True,
+                                  desktop_count=1, target_desktop_found=True,
+                                  has_connect_str=True,
+                                  connect_str="dummy-connect-str")
+        outer = mock.Mock()
+        outer.address = "10.0.0.1:443"
+        tls_conn = mock.Mock()
+        main_link = mock.Mock()
+        main_link.link_uuid = "lu"
+        main_link.trace_id = "ti"
+        main_link.redq_span_id = "rs"
+        raw_result = mock.Mock()
+        raw_result.OK = False
+        raw_result.error = "handshake boom"
+        extra = [
+            mock.patch("cmcc_cloud_alive.zte_connect_params"
+                       ".decode_connect_params", return_value=mock.Mock()),
+            mock.patch("cmcc_cloud_alive.zte_connect_params"
+                       ".inner_from_connect_params", return_value=mock.Mock()),
+            mock.patch("cmcc_cloud_alive.zte_route.outer_from_firm",
+                       return_value=outer),
+            mock.patch("cmcc_cloud_alive.zte_cag.dial_cag_tcp_tls",
+                       return_value=(tls_conn, mock.Mock())),
+            mock.patch("cmcc_cloud_alive.zte_cag_mux.CAGMux"),
+            mock.patch("cmcc_cloud_alive.zte_cag_mux.open_cag_mux_link",
+                       return_value=main_link),
+            mock.patch("cmcc_cloud_alive.zte_route.RawMainHandshake",
+                       return_value=raw_result),
+        ]
+        report = self._run_subcheck(
+            cli_main.cmd_product_zte_display_check, extra, material,
+            env_extra={"CCK_ZTE_CAG_AUTH_TEMPLATE_HEX": "deadbeef"})
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["stage"], "zte-display-check")
+        self.assertIn("handshake", report["error"])
 
 
 class ProductKeepaliveErrorTests(unittest.TestCase):
