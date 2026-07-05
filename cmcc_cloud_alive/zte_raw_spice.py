@@ -367,3 +367,51 @@ def keepaliveRawSpiceLoop(conn, interval: float = 25.0, stop_after: Optional[flo
                 break
             next_tick = now + interval
     return counters
+
+
+
+def RawSubChannelHandshake(
+    conn,
+    key: str,
+    vmid: str,
+    linkUUID: Optional[bytes],
+    traceID: str,
+    spanID: str,
+    spiceSessionID: int,
+    channelType: int,
+    channelID: int,
+) -> bool:
+    """Authenticate a ZTE raw SPICE sub-channel (P10-006/007/008).
+
+    Mirrors the auth portion of :func:`RawMainHandshake` but uses the
+    channel-scoped REDQ builder (:func:`BuildZTERawChannelREDQ`) and skips the
+    MAIN_INIT / attach / init phases that only apply to the main link.
+
+    Wire sequence (identical to the product tunnel for every sub link):
+      1. send ``BuildZTERawChannelREDQ`` (725-byte REDQ with channel caps)
+      2. ``readRawLinkReply`` → locate the RSA public-key marker
+      3. send a 128-byte zero ticket (no auth-type prefix)
+      4. read a 4-byte little-endian auth result; ``0`` means success
+
+    Returns ``True`` on success, ``False`` otherwise.
+    """
+    try:
+        conn.sendall(
+            BuildZTERawChannelREDQ(
+                key, vmid, linkUUID, traceID, spanID,
+                spiceSessionID, channelType, channelID,
+            )
+        )
+        reply = readRawLinkReply(conn, 8.0)
+        pk_off = reply.find(bytes([0x30, 0x81, 0x9F, 0x30, 0x0D]))
+        if pk_off < 0:
+            pk_off = reply.find(bytes([0x30, 0x81]))
+        if pk_off < 0:
+            return False
+        # Product tunnel sends a 128-byte zero ticket with no auth-type prefix.
+        conn.sendall(b"\x00" * 128)
+        result = _read_exact(conn, 4)
+        code = _u32(result)
+        return code == 0
+    except Exception:
+        return False
