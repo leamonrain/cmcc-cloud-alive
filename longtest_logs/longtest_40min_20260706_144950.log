@@ -1,0 +1,60 @@
+[2026-07-06 14:49:50] ======================================================================
+[2026-07-06 14:49:50] ########## 旧方案(legacy-init-reconnect)长测启动 [40min] (master#223 / w9) ##########
+[2026-07-06 14:49:50] 总时长=2400s(40min) | 保活:每300s一个burst(每次累计60s流量) | 状态检测:每60s
+[2026-07-06 14:49:50] 路径=legacy(DisplayInit+InputInit init单包+重连累计60s), 非type=3高频心跳
+[2026-07-06 14:49:50] 主日志=/home/demo/restore/cmcc-cloud-alive/longtest_logs/longtest_40min_20260706_144950.log
+[2026-07-06 14:49:50] 状态文件=/home/demo/restore/cmcc-cloud-alive/longtest_logs/status_40min_20260706_144950.jsonl
+[2026-07-06 14:49:50] PID=836007
+[2026-07-06 14:49:50] ======================================================================
+[2026-07-06 14:49:51] [首次状态检测] vmStatus=16 vmStatusShow=已关机 running=? (1.1s) raw={
+  "userServiceId": 2663816,
+  "spuName": "融合云电脑",
+  "skuSpec": "CPU4核|内存8G",
+  "skuSpecStr": "CPU：4核/内存：8G/系统盘：80G/带宽：--/显卡：--/云盘：-/功能：商务办公",
+  "spuCode": "zte-cloud-pc",
+  "skuId": "137",
+  "skuName": "家庭云电脑畅享版月包",
+  "validTime": "2023/10/25 10:37:12",
+  "expireTime": null,
+  "serviceStatus": 1,
+
+[2026-07-06 14:49:51] ########## 保活burst#1 开始 (目标累计60s屏幕/display流量) ##########
+[2026-07-06 14:49:51]   --- 保活连接#1.1 开始: 已累计0.0s, 剩余60.0s ---
+[2026-07-06 14:49:52] [状态检测] vmStatus=16 vmStatusShow=已关机 running=? (1.1s)
+[2026-07-06 14:50:03]   --- 保活连接#1.1 结束: 耗时11.7s, 累计11.7s, ok=True, ticks=1, counters={'messages': 1, 'autoReplies': 0, 'ticks': 1, 'errors': 1, 'heartbeats': 44} ---
+[2026-07-06 14:50:03]   >>> 已发送 display/input init 流量 (ticks=1) <<<
+[2026-07-06 14:50:03]   --- 保活连接#1.2 开始: 已累计11.7s, 剩余48.3s ---
+[2026-07-06 14:50:06]   --- 保活连接#1.2 结束: 耗时3.7s, 累计15.4s, ok=True, ticks=1, counters={'messages': 0, 'autoReplies': 0, 'ticks': 1, 'errors': 1, 'heartbeats': 1} ---
+[2026-07-06 14:50:06]   >>> 已发送 display/input init 流量 (ticks=1) <<<
+[2026-07-06 14:50:06]   --- 保活连接#1.3 开始: 已累计15.4s, 剩余44.6s ---
+[2026-07-06 14:50:10]   --- 保活连接#1.3 结束: 耗时4.2s, 累计19.6s, ok=True, ticks=1, counters={'messages': 0, 'autoReplies': 0, 'ticks': 1, 'errors': 1, 'heartbeats': 1} ---
+[2026-07-06 14:50:10]   >>> 已发送 display/input init 流量 (ticks=1) <<<
+[2026-07-06 14:50:10]   --- 保活连接#1.4 开始: 已累计19.6s, 剩余40.4s ---
+[2026-07-06 14:50:18]   --- 保活连接#1.4 结束: 耗时7.4s, 累计26.9s, ok=True, ticks=1, counters={'messages': 0, 'autoReplies': 0, 'ticks': 1, 'errors': 1, 'heartbeats': 2} ---
+[2026-07-06 14:50:18]   >>> 已发送 display/input init 流量 (ticks=1) <<<
+[2026-07-06 14:50:18]   --- 保活连接#1.5 开始: 已累计26.9s, 剩余33.1s ---
+[2026-07-06 14:50:22]   --- 保活连接#1.5 结束: 耗时4.3s, 累计31.2s, ok=True, ticks=1, counters={'messages': 0, 'autoReplies': 0, 'ticks': 1, 'errors': 1, 'heartbeats': 1} ---
+[2026-07-06 14:50:22]   >>> 已发送 display/input init 流量 (ticks=1) <<<
+[2026-07-06 14:50:22]   --- 保活连接#1.6 开始: 已累计31.2s, 剩余28.8s ---
+[2026-07-06 14:50:26]   --- 保活连接#1.6 结束: 耗时3.8s, 累计35.0s, ok=True, ticks=1, counters={'messages': 0, 'autoReplies': 0, 'ticks': 1, 'errors': 1, 'heartbeats': 1} ---
+[2026-07-06 14:50:26]   >>> 已发送 display/input init 流量 (ticks=1) <<<
+[2026-07-06 14:50:26]   --- 保活连接#1.7 开始: 已累计35.0s, 剩余25.0s ---
+[2026-07-06 14:50:32]   --- 保活连接#1.7 结束: 耗时5.7s, 累计40.7s, ok=True, ticks=1, counters={'messages': 0, 'autoReplies': 0, 'ticks': 1, 'errors': 1, 'heartbeats': 1} ---
+[2026-07-06 14:50:32]   >>> 已发送 display/input init 流量 (ticks=1) <<<
+[2026-07-06 14:50:32]   --- 保活连接#1.8 开始: 已累计40.7s, 剩余19.3s ---
+[2026-07-06 14:50:36]   --- 保活连接#1.8 结束: 耗时4.6s, 累计45.4s, ok=True, ticks=1, counters={'messages': 0, 'autoReplies': 0, 'ticks': 1, 'errors': 1, 'heartbeats': 2} ---
+[2026-07-06 14:50:36]   >>> 已发送 display/input init 流量 (ticks=1) <<<
+[2026-07-06 14:50:36]   --- 保活连接#1.9 开始: 已累计45.4s, 剩余14.6s ---
+[2026-07-06 14:50:42]   --- 保活连接#1.9 结束: 耗时6.0s, 累计51.4s, ok=True, ticks=1, counters={'messages': 0, 'autoReplies': 0, 'ticks': 1, 'errors': 1, 'heartbeats': 1} ---
+[2026-07-06 14:50:42]   >>> 已发送 display/input init 流量 (ticks=1) <<<
+[2026-07-06 14:50:42]   --- 保活连接#1.10 开始: 已累计51.4s, 剩余8.6s ---
+[2026-07-06 14:50:47]   --- 保活连接#1.10 结束: 耗时4.8s, 累计56.3s, ok=True, ticks=1, counters={'messages': 0, 'autoReplies': 0, 'ticks': 1, 'errors': 1, 'heartbeats': 1} ---
+[2026-07-06 14:50:47]   >>> 已发送 display/input init 流量 (ticks=1) <<<
+[2026-07-06 14:50:47]   --- 保活连接#1.11 开始: 已累计56.3s, 剩余3.7s ---
+[2026-07-06 14:50:53] [状态检测] vmStatus=1 vmStatusShow=运行中 running=? (0.8s)
+[2026-07-06 14:50:54]   --- 保活连接#1.11 结束: 耗时6.4s, 累计62.6s, ok=True, ticks=1, counters={'messages': 0, 'autoReplies': 0, 'ticks': 1, 'errors': 1, 'heartbeats': 1} ---
+[2026-07-06 14:50:54]   >>> 已发送 display/input init 流量 (ticks=1) <<<
+[2026-07-06 14:50:54] ########## 保活burst#1 结束: 累计保活62.6s, 共11次连接, 总ticks=11 ##########
+[2026-07-06 14:51:54] [状态检测] vmStatus=1 vmStatusShow=运行中 running=? (0.9s)
+[2026-07-06 14:52:55] [状态检测] vmStatus=1 vmStatusShow=运行中 running=? (1.1s)
+[2026-07-06 14:53:56] [状态检测] vmStatus=1 vmStatusShow=运行中 running=? (0.9s)

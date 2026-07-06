@@ -1625,11 +1625,7 @@ def run_research_probe(
 
 
 def _write_report(report, report_file=None):
-    if not report_file:
-        return
-    out = Path(os.path.expanduser(str(report_file)))
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    core.write_private_json_report(report, report_file)
 
 
 def native_transport_payloads(report, *, require_complete=True):

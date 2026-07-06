@@ -17,7 +17,10 @@ import argparse
 import io
 import json
 import os
+import subprocess
+import sys
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from cmcc_cloud_alive import main as cli_main
@@ -109,6 +112,45 @@ def _patch_plumbing(auth, route, summary=REDACTED_SUMMARY, sc_auth_code="SC"):
 
 
 # --- tests ------------------------------------------------------------------
+
+class WrapperRoutingTests(unittest.TestCase):
+    """The bin wrapper must route new CLI commands to cmcc_cloud_alive.main."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.repo_root = Path(__file__).resolve().parents[1]
+        cls.wrapper = cls.repo_root / "bin" / "cmcc_cloud_alive.py"
+
+    def _run_help(self, *args):
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(self.repo_root)
+        return subprocess.run(
+            [sys.executable, str(self.wrapper), *args],
+            cwd=str(self.repo_root),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+    def test_product_keepalive_interactive_help_uses_new_cli(self):
+        result = self._run_help("product-keepalive", "interactive", "--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage:", result.stdout)
+        self.assertIn("interactive", result.stdout)
+        self.assertNotIn("invalid choice", result.stderr)
+
+    def test_login_help_uses_new_cli(self):
+        result = self._run_help("login", "--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("password", result.stdout)
+        self.assertNotIn("invalid choice", result.stderr)
+
+    def test_legacy_command_still_routes_to_core_cli(self):
+        result = self._run_help("password-login", "--help")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("password-login", result.stdout)
+
 
 class ProductKeepaliveParserTests(unittest.TestCase):
     """The subcommand must be registered with the expected flags."""

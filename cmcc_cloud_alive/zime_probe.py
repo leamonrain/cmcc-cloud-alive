@@ -1520,10 +1520,7 @@ def extract_sequence(path, *, focus_kind="spice-mini-unknown:0x082a", window=6, 
         "runnerInputUse": runner_input["implementationUse"],
         "analyzedAt": core.shanghai_now().isoformat(),
     }
-    if report_file:
-        out = Path(os.path.expanduser(str(report_file)))
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    core.write_private_json_report(report, report_file)
     return report
 
 
@@ -1881,8 +1878,5 @@ def analyze(path, report_file=None):
         ),
         "analyzedAt": core.shanghai_now().isoformat(),
     }
-    if report_file:
-        out = Path(os.path.expanduser(str(report_file)))
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    core.write_private_json_report(report, report_file)
     return report

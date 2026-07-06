@@ -5,12 +5,17 @@ from . import core
 
 RUNNING_STATUS_VALUES = {1}
 OFF_STATUS_VALUES = {16}
-TARGET_SKU_KEYWORDS = ("家庭云电脑畅享版月包", "畅享版月包", "畅享版")
+TARGET_SKU_KEYWORDS = ("家庭云电脑畅享版月包", "畅享版月包")
+TARGET_ID_KEYS = ("vmId", "spuCode")
+TARGET_PRODUCT_KEYS = ("skuName", "vmName", "productName", "goodsName")
 
 
 def is_target_desktop(item):
-    text = " ".join(str(item.get(key) or "") for key in ("skuName", "vmName", "productName", "goodsName"))
-    return any(keyword in text for keyword in TARGET_SKU_KEYWORDS)
+    id_text = " ".join(str(item.get(key) or "") for key in TARGET_ID_KEYS)
+    product_text = " ".join(str(item.get(key) or "") for key in TARGET_PRODUCT_KEYS)
+    return any(keyword in id_text for keyword in TARGET_SKU_KEYWORDS) or any(
+        keyword in product_text for keyword in TARGET_SKU_KEYWORDS
+    )
 
 
 def target_desktops(items):
@@ -48,13 +53,14 @@ def list_desktops(state_path=None):
     return items
 
 
-def select_desktop(user_service_id, state_path=None):
+def select_desktop(user_service_id, state_path=None, skip_target_assert=False):
     args = core.argparse.Namespace(state=state_path)
     items = core.list_clouds(args)
     target = str(user_service_id)
     for item in items:
         if str(item.get("userServiceId")) == target:
-            _assert_target(item)
+            if not skip_target_assert:
+                _assert_target(item)
             core.merge_state({
                 "selectedUserServiceId": target,
                 "selectedDesktop": item,

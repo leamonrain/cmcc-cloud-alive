@@ -132,10 +132,10 @@ Run tests:
 python3 -m unittest discover -s tests -p 'test_python_*.py' -v
 ```
 
-Login and cache credentials:
+Login and cache credentials. Omit the password argument so it is entered via hidden prompt; avoid putting plaintext passwords in shell history:
 
 ```bash
-CMCC_ALIVE_STATE=.tmp/state.json python3 bin/cmcc_cloud_alive.py login <username> '<password>' --save-password
+CMCC_ALIVE_STATE=.tmp/state.json python3 bin/cmcc_cloud_alive.py login <username> --save-password
 ```
 
 List and select a desktop:

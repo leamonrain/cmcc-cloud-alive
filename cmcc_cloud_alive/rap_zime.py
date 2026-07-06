@@ -17,6 +17,8 @@ import struct
 import time
 import urllib.parse
 
+from . import core
+
 
 ZTEC_MAGIC = b"ZTEC"
 ZTEC_KEEPALIVE_REQUEST_SIZE = 26
@@ -4391,9 +4393,7 @@ def run_kcp_auth_sync_probe(
         "endedAt": time.time(),
     }
     report["elapsedSeconds"] = round(report["endedAt"] - report["startedAt"], 3)
-    if report_file:
-        Path(report_file).parent.mkdir(parents=True, exist_ok=True)
-        Path(report_file).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    core.write_private_json_report(report, report_file)
     return report
 
 
@@ -4588,9 +4588,7 @@ def run_kcp_auth_sync_probe_from_cag_material(
             else "Fresh CAG AUTH gate did not complete; reproduce official local proxy/session bootstrap and first 199-byte AUTH_HEAD before any SYNACK/native bridge work."
         )
     )
-    if report_file:
-        Path(report_file).parent.mkdir(parents=True, exist_ok=True)
-        Path(report_file).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    core.write_private_json_report(report, report_file)
     return report
 
 
@@ -4885,9 +4883,7 @@ def run_kcp_sync_probe(
         "endedAt": time.time(),
     }
     report["elapsedSeconds"] = round(report["endedAt"] - report["startedAt"], 3)
-    if report_file:
-        Path(report_file).parent.mkdir(parents=True, exist_ok=True)
-        Path(report_file).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    core.write_private_json_report(report, report_file)
     return report
 
 
@@ -5845,10 +5841,7 @@ def analyze_trace(path, report_file=None, sample_limit=40):
             ),
         },
     }
-    if report_file:
-        out = Path(os.path.expanduser(str(report_file)))
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    core.write_private_json_report(report, report_file)
     return report
 
 
@@ -6103,8 +6096,5 @@ def analyze_external_pcap(path, *, ss_log=None, report_file=None, sample_limit=2
             "It cannot produce runner input by itself because RAP tunnel id and send templates require payload-aware probe evidence or static recovery."
         ),
     }
-    if report_file:
-        out = Path(os.path.expanduser(str(report_file)))
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    core.write_private_json_report(report, report_file)
     return report

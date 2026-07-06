@@ -41,10 +41,7 @@ def _terminate_process(process, grace_seconds=5):
 
 
 def _write_report(report, report_file):
-    if report_file:
-        path = Path(os.path.expanduser(str(report_file)))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    core.write_private_json_report(report, report_file)
 
 
 def run(

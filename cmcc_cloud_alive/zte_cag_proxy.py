@@ -388,6 +388,16 @@ class CAGProxyConn:
             del self._rbuf[:n]
             return out
 
+    # -- PascalCase aliases (parity with CAGMuxLink; RawState.ReadMessage
+    #    checks hasattr(conn, "TakeReadBufferN") / "DiscardReadBuffer").
+    #    Without these the hasattr guard silently skips buffer draining on the
+    #    TCP route, causing 5-byte ZTE suffix residue → framing corruption. --
+    def TakeReadBufferN(self, n: int) -> bytes:
+        return self.take_read_buffer_n(n)
+
+    def DiscardReadBuffer(self) -> None:
+        self.discard_read_buffer()
+
 
 def open_cag_proxy_link(
     conn: socket.socket, params, link_id: int

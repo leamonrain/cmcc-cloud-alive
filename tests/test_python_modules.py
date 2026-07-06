@@ -64,10 +64,217 @@ class PythonModuleTests(PatchMixin, unittest.TestCase):
         self.assertEqual(state["password"], "pass")
         self.assertEqual(state["sohoToken"], "token")
 
+    def test_interactive_login_does_not_persist_password(self):
+        state_path = self.temp_state()
+        report_path = str(Path(state_path).with_name("interactive-report.json"))
+        self.set_attr(auth, "password_login", lambda username, password, state_path, save_password=False: core.merge_state({
+            "username": username,
+            "sohoToken": "token",
+            **({"password": password} if save_password else {}),
+        }, core.argparse.Namespace(state=state_path)))
+        self.set_attr(cloud, "list_desktops", lambda state_path: [{
+            "userServiceId": 2663816,
+            "vmName": "畅享版",
+            "skuName": "畅享版月包",
+            "vmStatus": 1,
+            "vmStatusShow": "运行中",
+        }])
+        self.set_attr(cloud, "select_desktop", lambda user_service_id, state_path, skip_target_assert=False: core.merge_state({
+            "selectedUserServiceId": str(user_service_id),
+        }, core.argparse.Namespace(state=state_path)) or {"userServiceId": str(user_service_id), "vmName": "畅享版"})
+        self.set_attr(cloud, "status", lambda user_service_id, state_path: {"vmStatusShow": "运行中", "vmStatus": 1})
+        self.set_attr(cloud, "is_running", lambda item: True)
+        self.set_attr(token, "ensure_token", lambda state_path, relogin=True: (True, "token"))
+        self.set_attr(desktop_keepalive, "once", lambda *args, **kwargs: {
+            "candidateAccepted": True,
+            "heartbeat": {"code": "0000"},
+            "infoReport": {"code": "0000"},
+            "disconnectTime": {"code": "0000", "disconnectTimes": 30},
+        })
+        self.set_attr(cli_main.time, "sleep", lambda seconds: None)
+        ticks = [0, 2, 2, 2]
+        self.set_attr(cli_main.time, "time", lambda: ticks.pop(0) if ticks else 2)
+
+        args = core.argparse.Namespace(
+            state=state_path,
+            username="user",
+            password="secret-pass",
+            user_service_id="",
+            non_interactive=True,
+            heartbeat_interval=1,
+            status_interval=1,
+            duration=1,
+            report_file=report_path,
+            probe=False,
+            point=False,
+            connect_events=False,
+            no_firm_auth=False,
+        )
+        cli_main.cmd_interactive(args)
+
+        saved = core.load_state(core.argparse.Namespace(state=state_path))
+        self.assertNotIn("password", saved)
+        report_text = Path(report_path).read_text(encoding="utf-8")
+        self.assertNotIn("secret-pass", report_text)
+        self.assertEqual(json.loads(report_text)["selectedUserServiceId"], "2663816")
+
+    def test_cmd_login_prompts_hidden_and_retries_without_saving_password(self):
+        state_path = self.temp_state()
+        calls = []
+
+        def fake_login(username, password, state_path_arg, save_password=False):
+            calls.append((username, password, state_path_arg, save_password))
+            if password == "bad-pass":
+                raise core.CmccError("auth failed")
+            core.merge_state({"username": username, "sohoToken": "token"}, core.argparse.Namespace(state=state_path_arg))
+
+        self.set_attr(auth, "password_login", fake_login)
+        self.set_attr(cli_main.getpass, "getpass", lambda prompt: "fresh-pass")
+        args = core.argparse.Namespace(
+            state=state_path,
+            username="user",
+            password="bad-pass",
+            save_password=False,
+        )
+
+        cli_main.cmd_login(args)
+
+        self.assertEqual(calls, [
+            ("user", "bad-pass", state_path, False),
+            ("user", "fresh-pass", state_path, False),
+        ])
+        self.assertNotIn("password", core.load_state(core.argparse.Namespace(state=state_path)))
+
+    def test_cmd_login_prompts_username_and_password_when_empty(self):
+        calls = []
+        self.set_attr(auth, "password_login", lambda *args, **kwargs: calls.append((args, kwargs)))
+        self.set_attr(cli_main, "_interactive_prompt", lambda message, default=None: "user-from-prompt")
+        self.set_attr(cli_main.getpass, "getpass", lambda prompt: "prompt-pass")
+        args = core.argparse.Namespace(
+            state=self.temp_state(),
+            username=None,
+            password=None,
+            save_password=False,
+        )
+
+        cli_main.cmd_login(args)
+
+        self.assertEqual(calls[0][0], ("user-from-prompt", "prompt-pass", args.state))
+        self.assertEqual(calls[0][1], {"save_password": False})
+
+    def test_product_keepalive_interactive_dispatch_defaults(self):
+        args = cli_main.build_parser().parse_args([
+            "product-keepalive",
+            "interactive",
+            "2663816",
+            "--non-interactive",
+            "--duration",
+            "3",
+        ])
+
+        self.assertIs(args.func, cli_main.cmd_interactive)
+        self.assertEqual(args.user_service_id, "2663816")
+        self.assertTrue(args.non_interactive)
+        self.assertEqual(args.heartbeat_interval, 300)
+        self.assertEqual(args.status_interval, 60)
+        self.assertEqual(args.duration, 3)
+        self.assertIsNone(args.username)
+        self.assertIsNone(args.password)
+
+    def test_interactive_rejects_non_target_desktop_selection(self):
+        state_path = self.temp_state()
+        self.set_attr(cloud, "list_desktops", lambda state_path: [
+            {"userServiceId": 1, "vmId": "vm-basic", "vmName": "基础版", "skuName": "基础版月包"},
+            {"userServiceId": 2, "vmId": "vm-畅享版月包", "vmName": "畅享版", "skuName": "畅享版月包"},
+        ])
+        with self.assertRaises(core.CmccError) as raised:
+            cli_main._interactive_select(core.argparse.Namespace(state=state_path, user_service_id="1"))
+
+        self.assertIn("only supports 畅享版月包", str(raised.exception))
+
+    def test_interactive_prompts_minutes_shows_disconnect_time_and_writes_chinese_logs(self):
+        state_path = self.temp_state()
+        report_path = str(Path(state_path).with_name("interactive-report.json"))
+        outputs = io.StringIO()
+        selected = []
+        keepalive_calls = []
+        prompts = iter(["", "2", "3"])
+        prompt_defaults = []
+        ticks = [0, 0, 181, 181, 181]
+
+        self.set_attr(auth, "password_login", lambda username, password, state_path, save_password=False: core.merge_state({
+            "username": username,
+            "sohoToken": "token",
+        }, core.argparse.Namespace(state=state_path)))
+        self.set_attr(cloud, "list_desktops", lambda state_path: [
+            {"userServiceId": 1, "vmId": "vm-basic", "spuCode": "basic-spu", "vmName": "基础版", "skuName": "基础版月包", "vmStatus": 1, "vmStatusShow": "运行中"},
+            {"userServiceId": 2663816, "vmId": "vm-畅享版月包-001", "spuCode": "changxiang-spu", "vmName": "畅享版", "skuName": "畅享版月包", "vmStatus": 1, "vmStatusShow": "运行中"},
+        ])
+        self.set_attr(cloud, "select_desktop", lambda user_service_id, state_path: selected.append(str(user_service_id)) or core.merge_state({
+            "selectedUserServiceId": str(user_service_id),
+        }, core.argparse.Namespace(state=state_path)) or {"userServiceId": str(user_service_id), "vmId": "vm-畅享版月包-001", "vmName": "畅享版"})
+        self.set_attr(cloud, "status", lambda user_service_id, state_path: {"vmStatusShow": "运行中", "vmStatus": 1})
+        self.set_attr(cloud, "is_running", lambda item: True)
+        self.set_attr(token, "ensure_token", lambda state_path, relogin=True: (True, "token"))
+        def fake_prompt(message, default=None):
+            prompt_defaults.append((message, default))
+            raw = next(prompts)
+            return raw or (default if default is not None else "")
+
+        self.set_attr(cli_main, "_interactive_prompt", fake_prompt)
+        self.set_attr(cli_main.time, "sleep", lambda seconds: None)
+        self.set_attr(cli_main.time, "time", lambda: ticks.pop(0) if ticks else 181)
+
+        def fake_once(*args, **kwargs):
+            keepalive_calls.append(kwargs)
+            return {
+                "candidateAccepted": True,
+                "heartbeat": {"code": "0000"},
+                "infoReport": {"code": "0000"},
+                "disconnectTime": {"code": "0000", "disconnectTimes": 30},
+            }
+
+        self.set_attr(desktop_keepalive, "once", fake_once)
+        args = core.argparse.Namespace(
+            state=state_path,
+            username="user",
+            password="secret-pass",
+            user_service_id="",
+            non_interactive=False,
+            heartbeat_interval=60,
+            status_interval=1,
+            duration=0,
+            report_file=report_path,
+            probe=False,
+            point=False,
+            connect_events=False,
+            no_firm_auth=False,
+        )
+
+        with contextlib.redirect_stdout(outputs):
+            cli_main.cmd_interactive(args)
+
+        report = json.loads(Path(report_path).read_text(encoding="utf-8"))
+        log_text = Path(report["logFile"]).read_text(encoding="utf-8")
+        stdout_text = outputs.getvalue()
+        self.assertEqual(selected, ["2663816"])
+        self.assertIn(("选择畅享版月包序号", "1"), prompt_defaults)
+        self.assertIn("spuCode=changxiang-spu", stdout_text)
+        self.assertEqual(report["selectedUserServiceId"], "2663816")
+        self.assertEqual(report["heartbeatInterval"], 120)
+        self.assertEqual(report["durationSeconds"], 3)
+        self.assertTrue(keepalive_calls[0]["send_disconnect_time"])
+        self.assertIn("getDisconnectTime", stdout_text)
+        self.assertIn("开始保活", log_text)
+        self.assertIn("持续保活中", log_text)
+        self.assertIn("发送流量日志", log_text)
+        self.assertIn("保活结束", log_text)
+        self.assertNotIn("secret-pass", Path(report_path).read_text(encoding="utf-8"))
+
     def test_cloud_list_select_and_status_use_cached_selection(self):
         state_path = self.temp_state()
         items = [
-            {"userServiceId": 2663816, "vmName": "畅享版", "vmStatus": 1, "vmStatusShow": "运行中"},
+            {"userServiceId": 2663816, "vmName": "畅享版", "skuName": "家庭云电脑畅享版月包", "vmStatus": 1, "vmStatusShow": "运行中"},
             {"userServiceId": 1, "vmName": "其他", "vmStatus": 16, "vmStatusShow": "已关机"},
         ]
         self.set_attr(core, "list_clouds", lambda args: items)
@@ -112,6 +319,13 @@ class PythonModuleTests(PatchMixin, unittest.TestCase):
 
         with self.assertRaises(core.CmccError):
             cloud.selected_user_service_id(state_path)
+
+    def test_cloud_target_requires_monthly_package_or_id_fields(self):
+        broad_name_only = {"vmName": "畅享版", "skuName": "家庭云电脑畅享版"}
+        spu_match = {"vmName": "家庭云电脑", "skuName": "未知", "spuCode": "家庭云电脑畅享版月包"}
+
+        self.assertFalse(cloud.is_target_desktop(broad_name_only))
+        self.assertTrue(cloud.is_target_desktop(spu_match))
 
     # --- P1 product route classification (RouteKind = scg/zte/error) ---
 

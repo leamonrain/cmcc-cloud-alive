@@ -71,6 +71,18 @@ CLIENT_PROFILES = {
 }
 
 DEFAULT_STATE = Path.home() / ".cmcc-cloud-alive" / "state.json"
+SENSITIVE_REPORT_KEYS = {
+    "accessToken",
+    "authorization",
+    "authPayload",
+    "clientId",
+    "connectStr",
+    "cpsid",
+    "jwt",
+    "password",
+    "sohoToken",
+    "token",
+}
 DEFAULT_SOURCE_PATHS = [
     "/opt/yidongyun/client/opt/chuanyun-vdi-client/resources/app.asar",
 ]
@@ -109,6 +121,34 @@ class CmccError(Exception):
     def __init__(self, message, response=None):
         super().__init__(message)
         self.response = response
+
+
+def sanitize_report_value(value):
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, item in value.items():
+            if str(key).lower() in {name.lower() for name in SENSITIVE_REPORT_KEYS}:
+                sanitized[key] = "<redacted>"
+            else:
+                sanitized[key] = sanitize_report_value(item)
+        return sanitized
+    if isinstance(value, list):
+        return [sanitize_report_value(item) for item in value]
+    return value
+
+
+def write_private_text(path, text):
+    path = Path(os.path.expanduser(str(path)))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    path.chmod(0o600)
+
+
+def write_private_json_report(report, report_file):
+    if not report_file:
+        return
+    path = Path(report_file)
+    write_private_text(path, json.dumps(sanitize_report_value(report), ensure_ascii=False, indent=2) + "\n")
 
 
 def shanghai_now():
@@ -2393,10 +2433,7 @@ def analyze_session_capture(args):
             "Current input did not expose HTTP keepalive; continue with native RAP/ZIME/SPICE display protocol capture."
         ),
     }
-    if getattr(args, "report_file", ""):
-        path = Path(os.path.expanduser(str(args.report_file)))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_private_json_report(report, getattr(args, "report_file", ""))
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 

@@ -132,6 +132,28 @@ class CAGMuxLink:
     def fileno(self) -> int:
         return self.mux.conn.fileno()
 
+    # -- raw SPICE buffer helpers (port of Go CAGMuxLink.TakeReadBufferN / DiscardReadBuffer) --
+    def TakeReadBufferN(self, n: int) -> bytes:
+        """Consume *n* bytes from the front of the read buffer.
+
+        Used by :meth:`RawState.ReadMessage` to extract the 5-byte ZTE
+        data-message suffix so it does not corrupt the next message's framing.
+        Returns ``b""`` when *n* <= 0 or the buffer is empty.
+        """
+        with self._cond:
+            if n <= 0 or not self._rbuf:
+                return b""
+            if n > len(self._rbuf):
+                n = len(self._rbuf)
+            out = bytes(self._rbuf[:n])
+            del self._rbuf[:n]
+            return out
+
+    def DiscardReadBuffer(self) -> None:
+        """Drop all buffered read data (port of Go ``CAGMuxLink.DiscardReadBuffer``)."""
+        with self._cond:
+            self._rbuf.clear()
+
 
 class CAGMux:
     """CAG proxy multiplexer over one raw TLS socket (port of B's ``CAGMux``)."""

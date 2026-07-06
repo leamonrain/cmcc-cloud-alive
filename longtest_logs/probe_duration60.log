@@ -1,0 +1,29 @@
+{
+  "route": "product-keepalive",
+  "stage": "zte-keepalive-done",
+  "ok": true,
+  "duration": 4.521,
+  "error": "",
+  "nextStep": "session completed; inspect counters",
+  "kind": "zte",
+  "reason": "scAuthCode empty and ZTE fields complete (B keepalive.go:127)",
+  "userServiceId": "2663816",
+  "vmId": "163c68a9-5e1e-4cba-b9bb-68ad599a8abf",
+  "firmAuthSummary": {
+    "spuCode": "zte-cloud-pc",
+    "vmType": 0,
+    "scAuthCodePresent": false,
+    "vmIdPresent": true,
+    "vmCredentialPresent": true,
+    "vmcEndpointPresent": true,
+    "cagEndpointPresent": true,
+    "outerPresent": true,
+    "innerPresent": false
+  },
+  "keepalive": {
+    "messages": 0,
+    "autoReplies": 0,
+    "ticks": 1,
+    "errors": 1
+  }
+}

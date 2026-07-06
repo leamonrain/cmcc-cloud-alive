@@ -1,11 +1,13 @@
 """Command line entry point for the Python protocol keepalive research tool."""
 
 import argparse
+import getpass
 import json
 import sys
+import time
 from pathlib import Path
 
-from . import account_keepalive, auth, cag_boot, cag_keepalive, cloud, core, desktop_keepalive, logout, power_monitor, probe, product_router, protocol_runner, rap_zime, spice_protocol, strategy, token, trace_timeline, verified_run, zime_native_bridge, zime_probe
+from . import account_keepalive, auth, cag_boot, cag_keepalive, cloud, core, desktop_keepalive, logout, mqtt_keepalive, power_monitor, probe, product_router, protocol_runner, rap_zime, spice_protocol, strategy, token, trace_timeline, verified_run, zime_native_bridge, zime_probe
 
 
 def _print(obj):
@@ -13,11 +15,25 @@ def _print(obj):
 
 
 def _write_report(obj, report_file):
-    if not report_file:
+    core.write_private_json_report(obj, report_file)
+
+
+def _default_interactive_log_file(report_file, state_path):
+    if report_file:
+        return str(Path(report_file).with_suffix(".log"))
+    if state_path:
+        return str(Path(state_path).with_suffix(".interactive.log"))
+    return None
+
+
+def _append_log(log_file, line):
+    if not log_file:
         return
-    path = Path(report_file)
+    path = Path(log_file)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    with path.open("a", encoding="utf-8") as fp:
+        fp.write(line + "\n")
+    path.chmod(0o600)
 
 
 def _auth_gate_acceptance_error(prefix, assessment):
@@ -157,7 +173,18 @@ def _int_auto(value):
 
 
 def cmd_login(args):
-    auth.password_login(args.username, args.password, args.state, save_password=args.save_password)
+    state = core.load_state(args)
+    username = args.username or state.get("username") or ""
+    if not username:
+        username = _interactive_prompt("账号(手机号)")
+    if not username:
+        raise core.CmccError("username is required")
+    password = args.password
+    if not password:
+        password = getpass.getpass("密码(输入不回显): ")
+    if not password:
+        raise core.CmccError("password is required")
+    _password_login_with_retry(username, password, args.state, save_password=args.save_password)
 
 
 def cmd_set_profile(args):
@@ -218,6 +245,14 @@ def cmd_keepalive_once(args):
     _print(desktop_keepalive.once(args.user_service_id, args.state, send_probe=args.probe, send_point=args.point, send_disconnect_time=args.disconnect_time, send_connect_events=args.connect_events, use_firm_auth=not args.no_firm_auth))
 
 
+def cmd_mqtt_keepalive(args):
+    _print(mqtt_keepalive.smoke(
+        args=args,
+        duration_seconds=args.duration,
+        report_file=args.report_file,
+    ))
+
+
 def cmd_keepalive(args):
     desktop_keepalive.run_loop(
         args.user_service_id,
@@ -231,6 +266,241 @@ def cmd_keepalive(args):
         send_connect_events=args.connect_events,
         use_firm_auth=not args.no_firm_auth,
     )
+
+
+def _interactive_prompt(message, default=None):
+    suffix = f" [{default}]" if default is not None else ""
+    raw = input(f"{message}{suffix}: ").strip()
+    return raw or (default if default is not None else "")
+
+
+def _password_login_with_retry(username, password, state_path, save_password=False):
+    try:
+        auth.password_login(username, password, state_path, save_password=save_password)
+        return password
+    except core.CmccError as err:
+        if save_password:
+            raise
+        print(f"登录失败: {err}")
+        retry = getpass.getpass("请重新输入密码(输入不回显): ")
+        if not retry:
+            raise core.CmccError("password is required") from err
+        auth.password_login(username, retry, state_path, save_password=False)
+        return retry
+
+
+def _interactive_sleep(seconds, started, run_seconds):
+    if not run_seconds:
+        time.sleep(seconds)
+        return
+    remaining = run_seconds - (time.time() - started)
+    if remaining > 0:
+        time.sleep(min(seconds, remaining))
+
+
+def _interactive_login(args):
+    state = core.load_state(args)
+    username = args.username or state.get("username") or ""
+    if not username:
+        username = _interactive_prompt("账号(手机号)")
+    if not username:
+        raise core.CmccError("username is required")
+    password = args.password
+    if not password:
+        if args.non_interactive:
+            raise core.CmccError("password is required in --non-interactive mode")
+        password = getpass.getpass("密码(输入不回显): ")
+    if not password:
+        raise core.CmccError("password is required")
+    password = _password_login_with_retry(username, password, args.state, save_password=False)
+    return username, password
+
+
+def _interactive_select(args):
+    items = cloud.list_desktops(args.state)
+    if not items:
+        raise core.CmccError("no cloud PC found for this account")
+    targets = cloud.target_desktops(items)
+    if not targets:
+        raise core.CmccError("target cloud PC not found: 畅享版月包")
+    print(f"\n发现 {len(items)} 台云电脑（其中畅享版月包 {len(targets)} 台，仅畅享版月包支持保活）：")
+    default_index = next(index for index, item in enumerate(items) if cloud.is_target_desktop(item))
+    for index, item in enumerate(items):
+        flag = "畅享版月包" if cloud.is_target_desktop(item) else "不可选(非畅享版月包)"
+        print(f"  {index}: userServiceId={item.get('userServiceId')} "
+              f"vmId={item.get('vmId') or ''} spuCode={item.get('spuCode') or ''} "
+              f"vmName={item.get('vmName') or ''} "
+              f"sku={item.get('skuName') or item.get('productName') or item.get('goodsName') or ''} "
+              f"status={item.get('vmStatusShow') or item.get('vmStatus')} [{flag}]")
+    chosen = None
+    if getattr(args, "user_service_id", None):
+        chosen = args.user_service_id
+    elif getattr(args, "non_interactive", False):
+        chosen = str(targets[0].get("userServiceId"))
+        print(f"非交互模式自动选择畅享版月包: {chosen}")
+    else:
+        raw = _interactive_prompt("选择畅享版月包序号", default=str(default_index)) or str(default_index)
+        try:
+            idx = int(raw)
+        except ValueError:
+            raise core.CmccError(f"invalid index: {raw}")
+        if idx < 0 or idx >= len(items):
+            raise core.CmccError(f"index out of range: {idx}")
+        picked = items[idx]
+        if not cloud.is_target_desktop(picked):
+            raise core.CmccError("refusing non-target cloud PC; interactive keepalive only supports 畅享版月包")
+        chosen = str(picked.get("userServiceId"))
+    chosen_item = next((item for item in items if str(item.get("userServiceId")) == str(chosen)), None)
+    if not chosen_item or not cloud.is_target_desktop(chosen_item):
+        raise core.CmccError("refusing non-target cloud PC; interactive keepalive only supports 畅享版月包")
+    selected = cloud.select_desktop(chosen, args.state)
+    print(f"已选择畅享版月包: userServiceId={chosen} vmId={selected.get('vmId') or ''} vmName={selected.get('vmName') or ''}")
+    return chosen
+
+
+def cmd_interactive(args):
+    """Productized interactive keepalive entry (user goal A).
+
+    Flow: prompt account + hidden password -> login -> list target cloud PCs ->
+    numbered selection -> write selectedUserServiceId -> keepalive loop with
+    periodic status printing and exponential backoff retry on failure.
+    """
+    state_path = args.state
+    args_ns = core.argparse.Namespace(state=state_path)
+    args_ns.username = args.username
+    args_ns.password = args.password
+    args_ns.user_service_id = args.user_service_id
+    args_ns.non_interactive = args.non_interactive
+
+    started = time.time()
+    report = {
+        "task": "T1.2-A interactive keepalive",
+        "state": state_path,
+        "startedAt": core.shanghai_now().isoformat(),
+        "username": "",
+        "selectedUserServiceId": "",
+        "rounds": 0,
+        "acceptedRounds": 0,
+        "failedRounds": 0,
+        "lastError": "",
+        "finishedAt": "",
+        "elapsedSeconds": 0,
+    }
+
+    username, password = _interactive_login(args_ns)
+    report["username"] = username
+    target = _interactive_select(args_ns)
+    report["selectedUserServiceId"] = target
+
+    heartbeat_interval = max(1, int(args.heartbeat_interval))
+    status_interval = max(1, int(args.status_interval))
+    run_seconds = int(args.duration or 0)
+    if not args.non_interactive:
+        default_minutes = max(1, int(round(heartbeat_interval / 60.0)))
+        interval_minutes = max(1, int(_interactive_prompt("保活间隔分钟数", default=str(default_minutes))))
+        heartbeat_interval = interval_minutes * 60
+        run_seconds = int(_interactive_prompt("持续秒数(0=永久)", default=str(run_seconds)) or 0)
+    report["heartbeatInterval"] = heartbeat_interval
+    report["durationSeconds"] = run_seconds
+    max_backoff = min(1800, max(60, heartbeat_interval * 10))
+    log_file = _default_interactive_log_file(args.report_file, state_path)
+    report["logFile"] = log_file or ""
+
+    initial_disconnect = None
+    try:
+        initial_disconnect = desktop_keepalive.once(
+            target, state_path,
+            send_probe=False, send_point=False,
+            send_disconnect_time=True, send_connect_events=False,
+            use_firm_auth=not args.no_firm_auth,
+        ).get("disconnectTime")
+        report["initialDisconnectTime"] = initial_disconnect
+        print(f"保活前getDisconnectTime: {initial_disconnect}", flush=True)
+    except Exception as err:
+        report["initialDisconnectTimeError"] = str(err)
+        print(f"保活前getDisconnectTime失败(可恢复): {err}", flush=True)
+
+    print(f"\n进入保活循环: 心跳间隔={heartbeat_interval}s 状态打印间隔={status_interval}s "
+          f"运行时长={'永久' if not run_seconds else str(run_seconds) + 's'}")
+    print("提示: 当前 desktop HTTP keepalive 路由尚未被证明可独立保活，"
+          "失败会退避重试，不会静默退出。Ctrl+C 可中断。\n")
+    _append_log(log_file, f"[{core.short_time()}] 开始保活 target={target} interval={heartbeat_interval}s duration={run_seconds}s initialDisconnectTime={initial_disconnect}")
+
+    count = 0
+    backoff = heartbeat_interval
+    last_status_print = 0.0
+    try:
+        while True:
+            count += 1
+            report["rounds"] = count
+            try:
+                token_ret = token.ensure_token(state_path, relogin=False)
+                valid = token_ret[0] if isinstance(token_ret, (tuple, list)) else bool(token_ret)
+                if not valid:
+                    auth.password_login(username, password, state_path, save_password=False)
+                print(f"[{core.short_time()}] [{count}] 开始保活轮次", flush=True)
+                _append_log(log_file, f"[{core.short_time()}] [{count}] round-start")
+                result = desktop_keepalive.once(
+                    target, state_path,
+                    send_probe=args.probe, send_point=args.point,
+                    send_disconnect_time=True, send_connect_events=args.connect_events,
+                    use_firm_auth=not args.no_firm_auth,
+                )
+                accepted = bool(result.get("candidateAccepted"))
+                report["lastResult"] = result
+                if accepted:
+                    report["acceptedRounds"] += 1
+                    backoff = heartbeat_interval
+                else:
+                    report["failedRounds"] += 1
+                elapsed = int(time.time() - started)
+                hb = (result.get("heartbeat") or {}).get("code", "-")
+                info = (result.get("infoReport") or {}).get("code", "-")
+                disc = result.get("disconnectTime")
+                disc_code = disc.get("code") if isinstance(disc, dict) else "-"
+                disc_times = disc.get("disconnectTimes") if isinstance(disc, dict) else None
+                status = "持续保活中" if accepted else "发送流量日志失败(可恢复)"
+                line = (f"[{core.short_time()}] [{count}] {status}: "
+                        f"发送流量日志 elapsed={core.format_duration(elapsed)} heartbeat={hb} "
+                        f"disconnect={disc_code} disconnectTimes={disc_times} info={info}")
+                print(line, flush=True)
+                _append_log(log_file, line)
+                if time.time() - last_status_print >= status_interval:
+                    try:
+                        snap = cloud.status(target, state_path)
+                        print(f"  状态: {snap.get('vmStatusShow') or snap.get('vmStatus')} "
+                              f"running={cloud.is_running(snap)}", flush=True)
+                    except Exception as err:
+                        print(f"  状态查询失败: {err}", flush=True)
+                    last_status_print = time.time()
+            except KeyboardInterrupt:
+                raise
+            except Exception as err:
+                report["failedRounds"] += 1
+                report["lastError"] = str(err)
+                print(f"[{core.short_time()}] [{count}] 发送流量日志异常(可恢复): {err} -> {backoff}s 后重试", flush=True)
+                _append_log(log_file, f"[{core.short_time()}] [{count}] 发送流量日志异常(可恢复): {err} backoff={backoff}s")
+                if run_seconds and time.time() - started >= run_seconds:
+                    break
+                _interactive_sleep(backoff, started, run_seconds)
+                backoff = min(max_backoff, backoff * 2)
+                continue
+            if run_seconds and time.time() - started >= run_seconds:
+                break
+            _interactive_sleep(heartbeat_interval, started, run_seconds)
+    except KeyboardInterrupt:
+        print("\n收到中断信号，退出保活循环。", flush=True)
+        report["lastError"] = "interrupted by user"
+    finally:
+        report["finishedAt"] = core.shanghai_now().isoformat()
+        report["elapsedSeconds"] = int(time.time() - started)
+        _append_log(log_file, f"[{core.short_time()}] 保活结束 rounds={report['rounds']} accepted={report['acceptedRounds']} failed={report['failedRounds']}")
+        _write_report(report, args.report_file)
+        if args.report_file:
+            print(f"报告已写入: {args.report_file}", flush=True)
+        if log_file:
+            print(f"日志已写入: {log_file}", flush=True)
+    _print(report)
 
 
 def cmd_cag_keepalive_once(args):
@@ -914,8 +1184,22 @@ def _run_zte_keepalive(args, auth, route, vm_id, report, started):
         if duration <= 0:
             duration = float(os.environ.get("CCK_ZTE_KEEPALIVE_DURATION", "120"))
         try:
+            # fix(b): derive the CAG auth template from the freshly obtained
+            # material instead of requiring the CCK_ZTE_CAG_AUTH_TEMPLATE_HEX
+            # env var.  build_cag_auth_blob(inner, None) builds a valid 220-byte
+            # CAG auth blob from scratch (host/proxySport/vmId); its hex is a
+            # valid 220-byte template that parse_auth_template accepts, so
+            # run_zte_keepalive_session skips the env fallback.  (The type-101
+            # auth buffer is 270 bytes and is rejected by parse_auth_template,
+            # which only accepts 241/220-byte CAG templates.)
+            from .zte_connect_params import decode_connect_params, inner_from_connect_params
+            from .zte_cag import build_cag_auth_blob
+            _cp = decode_connect_params(material.connect_str)
+            _inner = inner_from_connect_params(_cp)
+            auth_template_hex = build_cag_auth_blob(_inner, None).hex()
             counters = zte_route.run_zte_keepalive_session(
                 firm, material.connect_str, duration=duration,
+                auth_template_hex=auth_template_hex,
             )
             report["stage"] = "zte-keepalive-done"
             report["keepalive"] = counters
@@ -1249,10 +1533,10 @@ def build_parser():
     parser.add_argument("--state", default=None, help="state file path")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("login")
-    p.add_argument("username")
-    p.add_argument("password")
-    p.add_argument("--save-password", action="store_true", help="store password for unattended 24h re-login")
+    p = sub.add_parser("login", help="account login; omit password to use hidden prompt")
+    p.add_argument("username", nargs="?", help="account phone number; prompts when omitted")
+    p.add_argument("password", nargs="?", help="optional; omit to avoid plaintext shell history")
+    p.add_argument("--save-password", action="store_true", help="store password for unattended 24h re-login; prefer hidden prompt")
     p.set_defaults(func=cmd_login)
 
     p = sub.add_parser("set-profile")
@@ -1326,6 +1610,27 @@ def build_parser():
     p.add_argument("--connect-events", action="store_true")
     p.add_argument("--no-firm-auth", action="store_true")
     p.set_defaults(func=cmd_keepalive)
+
+    p = sub.add_parser("mqtt-keepalive", help="open MQTT 3.1.1 over TLS to alive.soho.komect.com and smoke-test the link")
+    p.add_argument("user_service_id", nargs="?")
+    p.add_argument("--duration", type=int, default=60, help="smoke-test length seconds; capped at 120 for safety")
+    p.add_argument("--report-file", default="", help="write redacted JSON evidence report")
+    p.set_defaults(func=cmd_mqtt_keepalive)
+
+    p = sub.add_parser("interactive", help="productized interactive keepalive: login, select cloud PC, keepalive loop")
+    p.add_argument("user_service_id", nargs="?")
+    p.add_argument("--username", default=None, help="account phone number; prompt if omitted")
+    p.add_argument("--password", default=None, help="password; prompt hidden if omitted (never logged)")
+    p.add_argument("--duration", type=int, default=0, help="run seconds; 0 means run forever")
+    p.add_argument("--heartbeat-interval", type=int, default=300, help="keepalive round interval seconds")
+    p.add_argument("--status-interval", type=int, default=60, help="status print interval seconds")
+    p.add_argument("--report-file", default=None, help="write JSON report to this path")
+    p.add_argument("--non-interactive", action="store_true", help="skip prompts; auto-select first target")
+    p.add_argument("--probe", action="store_true")
+    p.add_argument("--point", action="store_true")
+    p.add_argument("--connect-events", action="store_true")
+    p.add_argument("--no-firm-auth", action="store_true")
+    p.set_defaults(func=cmd_interactive)
 
     p = sub.add_parser("cag-keepalive-once")
     p.add_argument("user_service_id", nargs="?")
@@ -1643,6 +1948,21 @@ def build_parser():
     p.set_defaults(func=cmd_source_audit)
 
     p = sub.add_parser("product-keepalive")
+    product_sub = p.add_subparsers(dest="product_mode")
+    ip = product_sub.add_parser("interactive", help="interactive login, select cloud PC, and run keepalive loop")
+    ip.add_argument("user_service_id", nargs="?")
+    ip.add_argument("--username", default=None, help="account phone number; prompt if omitted")
+    ip.add_argument("--password", default=None, help="password; prompt hidden if omitted (never logged)")
+    ip.add_argument("--duration", type=int, default=0, help="run seconds; 0 means run forever")
+    ip.add_argument("--heartbeat-interval", type=int, default=300, help="keepalive round interval seconds")
+    ip.add_argument("--status-interval", type=int, default=60, help="status print interval seconds")
+    ip.add_argument("--report-file", default=None, help="write JSON report to this path")
+    ip.add_argument("--non-interactive", action="store_true", help="skip prompts; auto-select first target")
+    ip.add_argument("--probe", action="store_true")
+    ip.add_argument("--point", action="store_true")
+    ip.add_argument("--connect-events", action="store_true")
+    ip.add_argument("--no-firm-auth", action="store_true")
+    ip.set_defaults(func=cmd_interactive)
     p.add_argument("--duration", type=int, default=None, help="hold the SCG connection N seconds (binary default 120); 0 = until interrupted")
     p.add_argument("--forever", action="store_true", help="run the SCG keepalive binary persistently (Popen, returns immediately)")
     p.add_argument("--user-service-id", default=None, help="override the selected user service id")

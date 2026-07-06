@@ -197,6 +197,4 @@ def route_check(user_service_id=None, state_path=None, report_file=None):
 
 
 def _write_report(report_file, report):
-    path = Path(report_file)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    core.write_private_json_report(report, report_file)

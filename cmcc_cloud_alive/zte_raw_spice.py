@@ -39,6 +39,20 @@ def _u32(b: bytes) -> int:
     return struct.unpack_from("<I", b, 0)[0]
 
 
+def _zte_main_init_connection_id(payload: bytes) -> int:
+    # Ported from Go raw.go:207 zteMainInitConnectionID.
+    # ZTE MAIN_INIT connection_id is NOT at payload[:4]; locate via marker
+    # 0x02 0x00 0x00 0x00 0x01 and take the 4 bytes preceding it, else
+    # fall back to payload[3:7].
+    marker = b"\x02\x00\x00\x00\x01"
+    idx = payload.find(marker)
+    if idx >= 4:
+        return _u32(payload[idx - 4:idx])
+    if len(payload) >= 7:
+        return _u32(payload[3:7])
+    return 0
+
+
 def copy_c_string(dst: memoryview, s: str) -> None:
     data = s.encode("utf-8", "ignore")
     n = min(len(dst), len(data))
@@ -139,6 +153,26 @@ def BuildZTERawDisplayInit() -> bytes:
 
 def BuildZTERawInputInit() -> bytes:
     return bytes.fromhex("67000200000000000000000200")
+
+
+def BuildZTERawDisplayHeartbeat(counter: int) -> bytes:
+    """Build a ZTE raw SPICE display heartbeat (type=3, 12-byte body).
+
+    Reverse-engineered from pcapng stream analysis (T7-C-fix).  The display
+    channel carries a periodic type=3 message whose body is::
+
+        [0:u32][0xffffff00:u32][varying_u32]
+
+    The third u32 is a monotonic counter that increments ~250 every ~5
+    packets (~21 Hz), mimicking a screen-refresh timestamp.
+    """
+    msg = bytearray(18)  # type(2) + size(4) + body(12)
+    _put_u16(msg, 0, 0x0003)
+    _put_u32(msg, 2, 12)
+    _put_u32(msg, 6, 0)                       # body[0:4]  = 0
+    _put_u32(msg, 10, 0xFFFFFF00)             # body[4:8]  = 0xffffff00
+    _put_u32(msg, 14, counter & 0xFFFFFFFF)   # body[8:12] = varying counter
+    return bytes(msg)
 
 
 def rawMessageWithPrefix(serial: int, msg: bytes) -> bytes:
@@ -285,8 +319,8 @@ def RawMainHandshake(conn, key: str, vmid: str, linkUUID: Optional[bytes], trace
         spice_session_id = 0
         for _ in range(15):
             msg_type, payload = state.ReadMessage(conn, 2.0)
-            if msg_type == 0x67 and len(payload) >= 4:
-                spice_session_id = _u32(payload[:4])
+            if msg_type == 0x67 and len(payload) >= 10:
+                spice_session_id = _zte_main_init_connection_id(payload)
                 if hasattr(conn, "DiscardReadBuffer"):
                     conn.DiscardReadBuffer()
                 break
@@ -334,20 +368,40 @@ def RawMainHandshake(conn, key: str, vmid: str, linkUUID: Optional[bytes], trace
         return RawHandshakeResult(error=str(exc))
 
 
-def keepaliveRawSpiceLoop(conn, interval: float = 25.0, stop_after: Optional[float] = None) -> dict:
+def keepaliveRawSpiceLoop(conn, interval: float = 25.0, stop_after: Optional[float] = None,
+                          heartbeat_hz: float = 21.0) -> dict:
     """Read/auto-reply raw messages and periodically send display/input init.
 
     This is the Python route's conservative product keepalive loop: it preserves
     B's raw auto replies and injects screen/input channel init bytes as outbound
     traffic when idle.  It returns counters for reports/tests.
+
+    When *heartbeat_hz* > 0 the loop also injects display type=3 heartbeat
+    messages at that cadence, mimicking the screen-refresh traffic observed in
+    pcapng captures (T7-C-fix).  The read timeout is shrunk to the heartbeat
+    interval so the loop can honour the cadence.
     """
     state = RawState()
     started = time.time()
     next_tick = started
-    counters = {"messages": 0, "autoReplies": 0, "ticks": 0, "errors": 0}
+    counters = {"messages": 0, "autoReplies": 0, "ticks": 0, "errors": 0,
+                "heartbeats": 0, "display_type3_heartbeat_frames": 0,
+                "heartbeat_hz": heartbeat_hz}
+    # Display heartbeat (type=3) injection — mimics screen-refresh traffic
+    # observed in pcapng at ~21 Hz.  The body's varying u32 increments
+    # ~250 every ~5 packets.
+    hb_interval = (1.0 / heartbeat_hz) if heartbeat_hz and heartbeat_hz > 0 else None
+    next_hb = started
+    hb_counter = 0
+    hb_seq = 0
+    # Keep the read timeout short enough to honour the heartbeat cadence.
+    if hb_interval:
+        read_timeout = min(hb_interval, 1.0)
+    else:
+        read_timeout = min(1.0, max(0.1, interval))
     while stop_after is None or time.time() - started < stop_after:
         try:
-            msg_type, payload = state.ReadMessage(conn, min(1.0, max(0.1, interval)))
+            msg_type, payload = state.ReadMessage(conn, read_timeout)
             counters["messages"] += 1
             if state.AutoReply(conn, msg_type, payload):
                 counters["autoReplies"] += 1
@@ -366,6 +420,20 @@ def keepaliveRawSpiceLoop(conn, interval: float = 25.0, stop_after: Optional[flo
                 counters["errors"] += 1
                 break
             next_tick = now + interval
+        if hb_interval and now >= next_hb:
+            try:
+                suffix = state.LastSuffix if state.LastSuffix else b"\x00" * 5
+                conn.sendall(rawMessageWithPrefix(state.nextSerial(),
+                                                  BuildZTERawDisplayHeartbeat(hb_counter)) + suffix)
+                counters["heartbeats"] += 1
+                counters["display_type3_heartbeat_frames"] += 1
+                hb_seq += 1
+                if hb_seq % 5 == 0:
+                    hb_counter = (hb_counter + 250) & 0xFFFFFFFF
+            except Exception:
+                counters["errors"] += 1
+                break
+            next_hb = now + hb_interval
     return counters
 
 
