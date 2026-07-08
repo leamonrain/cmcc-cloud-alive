@@ -26,3 +26,17 @@ build/
 
 # Local backups created during regeneration
 _backup_before_selfcontained_*/
+
+# Blacklist: local dev/tooling artifacts (never commit)
+.agent-workbench/
+.agent/
+.agent_protocol_runner_checkpoint.txt
+docs/
+tests/
+longtest_logs/
+scg_go/
+research/
+notes/
+progress/
+hive_t6/
+longtest_runner.py
