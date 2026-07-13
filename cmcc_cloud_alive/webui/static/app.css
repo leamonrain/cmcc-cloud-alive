@@ -1,0 +1,2217 @@
+/* CMCC Alive WebUI — Lens@3000 light SaaS admin (J8_UI_LENS_SKIN) */
+:root {
+  --bg: #f5f5f4;
+  --bg-page: #fafafa;
+  --bg-elev: #ffffff;
+  --bg-elev-2: #fafafa;
+  --bg-soft: #f4f4f5;
+  --border: #e7e5e4;
+  --border-strong: #d6d3d1;
+  --text: #18181b;
+  --text-dim: #79716b;
+  --text-soft: #a8a29e;
+  --accent: #625fff;
+  --accent-2: #8d54ff;
+  --accent-soft: rgba(98, 95, 255, 0.10);
+  --accent-ring: rgba(98, 95, 255, 0.22);
+  --danger: #e40014;
+  --warn: #c2410c;
+  --idle: #a8a29e;
+  --running: #007956;
+  --running-soft: #00bb7f;
+  --stopped: #57534e;
+  --error: #e40014;
+  --radius: 8px;
+  --radius-sm: 6px;
+  --shadow: 0 1px 2px rgba(24, 24, 27, 0.04), 0 1px 3px rgba(24, 24, 27, 0.06);
+  --shadow-md: 0 4px 12px rgba(24, 24, 27, 0.06);
+  --font: "Geist", "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* HARD_GATE#654 A: empty/hidden must fully collapse (no residual chrome) */
+.hidden {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  background: var(--bg-page);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.45;
+  letter-spacing: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+a {
+  color: var(--accent);
+}
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background:
+    linear-gradient(180deg, #f8f7ff 0%, var(--bg-page) 180px);
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+  padding: 12px 20px;
+  background: rgba(255, 255, 255, 0.92);
+  border-bottom: 1px solid var(--border);
+  backdrop-filter: blur(10px);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 220px;
+}
+
+.brand-mark {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+  box-shadow: 0 0 0 1px rgba(98, 95, 255, 0.18), 0 6px 14px rgba(98, 95, 255, 0.18);
+}
+
+.brand-text h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0;
+  color: var(--text);
+}
+
+.brand-sub {
+  margin: 2px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.top-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 1;
+}
+
+.stat {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.stat-run {
+  color: var(--running);
+  border-color: rgba(0, 121, 86, 0.28);
+  background: rgba(0, 187, 127, 0.08);
+}
+
+.stat-err {
+  color: var(--error);
+  border-color: rgba(228, 0, 20, 0.25);
+  background: rgba(228, 0, 20, 0.06);
+}
+
+.top-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.main {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 18px 20px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.topbar-inner {
+  width: 100%;
+  max-width: none;
+}
+
+.composer,
+.global-log-panel,
+.card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.composer {
+  padding: 16px 16px 14px;
+}
+
+.composer-head h2,
+.timeline-head h2,
+.panel-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.hint,
+.field-note {
+  margin: 6px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px 14px;
+  margin-top: 14px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.field > span {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.field em {
+  color: var(--danger);
+  font-style: normal;
+}
+
+.field input[type="text"],
+.field input[type="password"],
+.field input[type="number"],
+.field select,
+.card input[type="text"],
+.card input[type="password"],
+.card input[type="number"],
+.card select {
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: #fff;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  box-sizing: border-box;
+}
+
+/* HARD_GATE#707 #6: numeric fields stay short; leave breathing room */
+.field input[type="number"],
+.card input[type="number"] {
+  width: auto;
+  max-width: 7.5rem;
+  min-width: 4.5rem;
+}
+
+.field input:focus,
+.field select:focus,
+.card input:focus,
+.card select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field-row select {
+  flex: 1;
+  min-width: 0;
+}
+
+/* HARD_GATE#707 #6: number inputs short + breathing, not full-track stretch */
+.field-row input {
+  flex: 1;
+  min-width: 0;
+}
+.field-row input[type="number"] {
+  flex: 0 0 auto;
+  width: 5.5rem;
+  max-width: 7rem;
+  min-width: 4.5rem;
+}
+
+.unit {
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.seg-btn {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text-dim);
+  /* HARD_GATE#665 B: segmented control, not pill/ellipse */
+  border-radius: var(--radius-sm);
+  padding: 0 10px;
+  min-height: 36px; /* HARD_GATE#715 equal control height */
+  height: 36px;
+  line-height: 1.2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.seg-btn:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.seg-btn.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: rgba(98, 95, 255, 0.35);
+  font-weight: 600;
+}
+
+.composer-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.composer-msg {
+  margin: 0;
+  min-height: 1.2em;
+  color: var(--text-dim);
+  font-size: 13px;
+  flex: 1;
+}
+
+.composer-msg.error {
+  color: var(--danger);
+}
+
+.composer-msg.ok {
+  color: var(--running);
+}
+
+.composer-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn {
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  padding: 8px 14px;
+  min-height: 36px;
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease, color 0.15s ease;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--bg-soft);
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-sm {
+  /* HARD_GATE#715: no short btn-sm in control rows; keep 36px line */
+  min-height: 36px;
+  height: 36px;
+  padding: 0 12px;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(98, 95, 255, 0.25);
+}
+
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.04);
+  background: #5551f0;
+  border-color: #5551f0;
+}
+
+.btn-secondary {
+  background: var(--accent-soft, rgba(98, 95, 255, 0.10));
+  border-color: rgba(98, 95, 255, 0.42);
+  color: var(--text, #1f2430);
+  font-weight: 600;
+}
+.btn-secondary:hover:not(:disabled) {
+  background: rgba(98, 95, 255, 0.16);
+  border-color: rgba(98, 95, 255, 0.62);
+  color: var(--text, #1f2430);
+  filter: none;
+}
+
+.btn-ghost {
+  background: transparent;
+}
+
+.btn-danger {
+  background: rgba(228, 0, 20, 0.06);
+  border-color: rgba(228, 0, 20, 0.28);
+  color: var(--danger);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: rgba(228, 0, 20, 0.10);
+}
+
+.btn-stop {
+  background: rgba(87, 83, 78, 0.06);
+  border-color: rgba(87, 83, 78, 0.28);
+  color: var(--stopped);
+}
+
+.timeline-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.timeline {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+.empty {
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--text-dim);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border-left: 3px solid var(--idle);
+}
+
+.card.status-running {
+  border-left-color: var(--running);
+  box-shadow: var(--shadow), 0 0 0 1px rgba(0, 121, 86, 0.08);
+}
+
+.card.status-error {
+  border-left-color: var(--error);
+  box-shadow: var(--shadow), 0 0 0 1px rgba(228, 0, 20, 0.08);
+}
+
+.card.status-stopped {
+  border-left-color: var(--stopped);
+}
+
+.card.status-idle {
+  border-left-color: var(--idle);
+}
+
+.card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 12px 8px;
+  cursor: default;
+}
+
+.card-title {
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--idle);
+  flex: 0 0 auto;
+}
+
+.card.status-running .status-dot {
+  background: var(--running-soft);
+  box-shadow: 0 0 0 3px rgba(0, 187, 127, 0.16);
+}
+
+.card.status-error .status-dot {
+  background: var(--error);
+  box-shadow: 0 0 0 3px rgba(228, 0, 20, 0.12);
+}
+
+.card.status-stopped .status-dot {
+  background: var(--stopped);
+}
+
+.card-name {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+  word-break: break-word;
+  color: var(--text);
+}
+
+.card-meta {
+  margin: 3px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  white-space: nowrap;
+  background: var(--bg-soft);
+}
+
+.badge-running {
+  color: var(--running);
+  border-color: rgba(0, 121, 86, 0.28);
+  background: rgba(0, 187, 127, 0.08);
+}
+
+.badge-error {
+  color: var(--error);
+  border-color: rgba(228, 0, 20, 0.25);
+  background: rgba(228, 0, 20, 0.06);
+}
+
+.badge-stopped {
+  color: var(--stopped);
+  border-color: rgba(87, 83, 78, 0.25);
+  background: rgba(87, 83, 78, 0.06);
+}
+
+.badge-idle {
+  color: var(--text-dim);
+}
+
+.card-surface {
+  padding: 0 12px 10px;
+}
+
+.card-body {
+  display: none;
+  padding: 0 12px 12px;
+  border-top: 1px solid transparent;
+}
+
+.card.open .card-body,
+.card-body.is-open {
+  display: block;
+  border-top-color: var(--border);
+  padding-top: 12px;
+  margin-top: 2px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.card-summary {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px 10px;
+  padding: 0 12px 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .card-summary {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.card-summary strong {
+  display: block;
+  color: var(--text);
+  font-weight: 500;
+  margin-top: 2px;
+  word-break: break-all;
+}
+
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.card-error {
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(228, 0, 20, 0.05);
+  border: 1px solid rgba(228, 0, 20, 0.18);
+  color: #b42318;
+  font-size: 12px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+/* HARD_GATE#665 D residual: empty/hidden red chrome only (JS uses .hidden / empty text) */
+.card-error.hidden,
+#config-modal-error.hidden,
+.card-error:empty,
+#config-modal-error:empty {
+  display: none !important;
+}
+
+/* A residual: empty / .hidden error capsule must not paint red box */
+.card-error.hidden,
+#config-modal-error.hidden,
+.card-error:empty,
+#config-modal-error:empty {
+  display: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  min-height: 0 !important;
+  height: 0 !important;
+  overflow: hidden !important;
+}
+
+.card-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.card-fields .field.span-2 {
+  grid-column: 1 / -1;
+}
+
+.log-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+  overflow: hidden;
+}
+
+.log-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 12px;
+  background: #fff;
+}
+
+.log-box {
+  max-height: 180px;
+  overflow: auto;
+  padding: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  background: #fafafa;
+  color: var(--text);
+}
+
+/* OPS#456/#489 / HARD_GATE#829 — fixed ~6-line exterior log viewport (=#810 188px) */
+.card-log-expanded {
+  min-height: 0;
+}
+.card-log-expanded .log-box {
+  /* true 6 lines: align with #810 12.75em / 188px system */
+  height: 188px;
+  max-height: 188px;
+  min-height: 188px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+.card-log-expanded .log-line {
+  line-height: 1.35;
+  min-height: 0;
+}
+
+#global-log {
+  max-height: 160px;
+}
+
+.log-line {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+  color: var(--text);
+}
+
+.log-line time {
+  color: var(--text-soft);
+  flex: 0 0 auto;
+}
+
+.log-line.error,
+.log-line.error span {
+  color: #b42318;
+}
+
+.log-line.token,
+.log-line.token span {
+  color: #4f46e5;
+}
+
+.log-line.warn,
+.log-line.warn span {
+  color: #c2410c;
+}
+
+.log-empty {
+  color: var(--text-dim);
+  padding: 8px 2px;
+}
+
+.global-log-panel {
+  padding: 12px;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.sys-info {
+  margin: 8px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(24, 24, 27, 0.36);
+}
+
+.modal.hidden {
+  display: none;
+}
+
+.modal-card {
+  width: min(420px, 100%);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  box-shadow: var(--shadow-md);
+}
+
+.modal-wide {
+  width: min(520px, 100%);
+}
+
+.modal-card h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  color: var(--text);
+}
+
+.modal-card p,
+.help-body {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.help-body ul {
+  margin: 10px 0 0;
+  padding-left: 18px;
+}
+
+.help-body li {
+  margin: 4px 0;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 60;
+  max-width: min(480px, calc(100% - 24px));
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: #fff;
+  border: 1px solid var(--border);
+  color: var(--text);
+  box-shadow: var(--shadow-md);
+}
+
+.toast.hidden {
+  display: none;
+}
+
+.toast.error {
+  border-color: rgba(228, 0, 20, 0.28);
+  color: #b42318;
+  background: #fff7f7;
+}
+
+@media (max-width: 720px) {
+  .card-summary,
+  .card-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    padding: 10px 12px;
+  }
+
+  .main {
+    padding: 12px 10px 28px;
+  }
+}
+
+/* J8_UI_CARD_INTERACT — surface always-visible desktop + logs */
+.card-desktop-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start; /* HARD_GATE#707 #7 top-align labels */
+  margin: 0 0 10px;
+}
+
+.card-desktop-row .desktop-field {
+  margin: 0;
+}
+
+.card-desktop-row select {
+  width: 100%;
+}
+
+.spu-chip {
+  min-width: 120px;
+  max-width: 200px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.spu-chip strong {
+  display: block;
+  margin-top: 2px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.surface-log {
+  margin-top: 2px;
+}
+
+.surface-log .log-box {
+  max-height: 188px; /* HARD_GATE#829 unify with #810 */
+  min-height: 72px;
+  overflow: auto;
+}
+
+.card-config-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.card-actions .btn[data-act="config"][aria-expanded="true"] {
+  border-color: #4f46e5;
+  color: #3730a3;
+  background: rgba(79, 70, 229, 0.08);
+}
+
+@media (max-width: 560px) {
+  .card-desktop-row {
+    grid-template-columns: 1fr;
+  }
+  .spu-chip {
+    max-width: none;
+  }
+}
+
+/* J8_UI_ACCOUNT_FLOW: composer two-column */
+.form-grid-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.95fr);
+  gap: 16px 20px;
+  align-items: start;
+}
+.composer-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.composer-col-right .field:first-child {
+  margin-top: 0;
+}
+.official-protocol-field .spu-chip {
+  min-width: 0;
+  max-width: none;
+  width: 100%;
+}
+#c-desktop:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+@media (max-width: 860px) {
+  .form-grid-composer {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* OPS#337 config centered modal */
+#config-modal.modal {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(15, 23, 42, 0.45);
+  padding: 24px 16px;
+}
+#config-modal.modal.hidden { display: none; }
+.config-modal-card {
+  /* OPS#469: keep >=720 so form-bottom-3 has room for 3 tracks */
+  width: min(760px, 100%);
+  min-width: min(720px, 100%);
+  max-height: min(86vh, 900px);
+  overflow: auto;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.28);
+  padding: 0;
+}
+.config-modal-card .modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 8px;
+  border-bottom: 1px solid #e5e7eb;
+}
+.config-modal-card .modal-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+.config-modal-card .modal-x {
+  min-width: 36px;
+  font-size: 22px;
+  line-height: 1;
+  padding: 4px 8px;
+}
+.config-modal-card .modal-body { padding: 14px 16px 16px; }
+.config-modal-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 12px;
+}
+.config-modal-fields .field.span-2 { grid-column: 1 / -1; }
+.config-modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+.config-modal-desktop {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(120px, 160px);
+  gap: 10px;
+  align-items: start; /* HARD_GATE#707 #7 top-align labels */
+  margin: 4px 0 0;
+}
+.config-modal-desktop .desktop-field { margin: 0; }
+.config-modal-desktop select { width: 100%; }
+.config-modal-actions .btn-primary { min-width: 7.5rem; }
+@media (max-width: 640px) {
+  .config-modal-desktop {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+}
+.card.is-configuring { outline: 2px solid rgba(37, 99, 235, 0.35); }
+.card .card-body { display: none !important; }
+.card.open .card-body { display: none !important; }
+@media (max-width: 640px) {
+  .config-modal-fields { grid-template-columns: 1fr; }
+}
+
+/* ASSIGN#380 / OPS#388 — desktop Segmented + dual equal boxes */
+.desk-seg {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  min-height: 72px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+}
+
+.desk-seg.is-empty {
+  justify-content: center;
+}
+
+.desk-seg-empty {
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 10px 8px;
+  text-align: center;
+}
+
+.desk-seg-item {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.desk-seg-item:hover {
+  border-color: var(--border-strong);
+}
+
+.desk-seg-item.is-active {
+  border-color: rgba(98, 95, 255, 0.4);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px rgba(98, 95, 255, 0.12);
+}
+
+.desk-seg-item input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.desk-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  background: #fff;
+  justify-self: center;
+}
+
+.desk-seg-item.is-active .desk-dot {
+  border-color: var(--accent);
+  background: radial-gradient(circle at center, var(--accent) 0 40%, #fff 45%);
+}
+
+.desk-seg-text {
+  min-width: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.35;
+  word-break: break-all;
+}
+
+.desk-seg-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.desk-seg-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.desk-seg-tools .btn {
+  min-height: 36px;
+}
+
+.desk-protocol-note {
+  margin: 6px 0 0;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.config-desktop-field > span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.config-modal-fields {
+  grid-template-columns: 1fr 1fr;
+}
+
+/* card bottom dual boxes equal height */
+.card-surface-dual {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  align-items: stretch;
+  margin-top: 2px;
+}
+
+.card-surface-dual .surface-log {
+  display: flex;
+  flex-direction: column;
+  min-height: 140px;
+  height: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+  overflow: hidden;
+}
+
+.card-surface-dual .log-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.card-surface-dual .surface-log {
+  margin-top: 0;
+}
+
+.card-surface-dual .log-box:not(.log-viewport) {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
+.spu-chip-inline {
+  min-width: 0;
+  max-width: 140px;
+  padding: 4px 6px;
+  font-size: 10px;
+}
+
+.spu-chip-inline strong {
+  margin-top: 0;
+  font-size: 11px;
+}
+
+@media (max-width: 720px) {
+  .card-surface-dual {
+    grid-template-columns: 1fr;
+  }
+  .card-surface-dual .surface-log {
+    min-height: 120px;
+  }
+}
+
+/* OPS#469 hard 3-col: client / mode / user protocol (wrapper is NOT .field) */
+.config-modal-fields .form-bottom-3 {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  gap: 10px 12px;
+  align-items: start; /* HARD_GATE#707 #7 top-align labels */
+  grid-column: 1 / -1;
+  min-width: 0;
+  width: 100%;
+  flex-direction: unset !important; /* neutralize any inherited .field flex-col */
+}
+.config-modal-fields .form-bottom-3 > .field,
+.config-modal-fields .form-bottom-3 > label.field {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  min-width: 0;
+  width: auto;
+}
+/* OPS#476: interval || traffic side-by-side */
+.config-modal-fields .form-pair {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 10px 12px;
+  align-items: start; /* HARD_GATE#707 #7 top-align labels */
+  grid-column: 1 / -1;
+  min-width: 0;
+  width: 100%;
+  flex-direction: unset !important;
+}
+.config-modal-fields .form-pair > .field,
+.config-modal-fields .form-pair > label.field {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  min-width: 0;
+  width: auto;
+}
+.desk-seg-tools {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+@media (max-width: 640px) {
+  .config-modal-fields .form-bottom-3,
+  .config-modal-fields .form-pair {
+    grid-template-columns: 1fr !important;
+  }
+  .config-modal-card {
+    min-width: 0;
+  }
+}
+
+/* HARD GATE OPS#508 / HARD_GATE#829 — log viewport ~6 lines (=#810 12.75em) */
+.log-viewport {
+  max-height: 12.75em; /* true 6 lines */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  line-height: 1.45;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.desk-seg.is-locked,
+.desk-seg[data-locked="1"] {
+  opacity: 0.72;
+  pointer-events: none;
+}
+.desk-seg.is-locked .desk-seg-item,
+.desk-seg[data-locked="1"] .desk-seg-item {
+  cursor: not-allowed;
+}
+
+/* HARD_GATE#654 dual-surface harden: equal height desk|log, 6-line scroll */
+.card-surface-dual {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  min-height: 168px;
+}
+.card-surface-dual .surface-log {
+  min-height: 160px;
+}
+/* height lock moved to HARD_GATE#784 sole block */
+.desk-seg {
+  max-height: 220px;
+  overflow-y: auto;
+}
+.timeline {
+  width: 100%;
+}
+.card {
+  width: 100%;
+}
+
+/* HARD_GATE#654 form-pair: account|password equal columns */
+/* HARD_GATE#729 A: 保活间隔 || 单次流量持续 forced 2-col */
+.form-pair {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+  gap: 10px 12px;
+  grid-column: 1 / -1;
+  min-width: 0;
+  width: 100%;
+  align-items: start;
+}
+.form-pair > .field,
+.form-pair > label.field {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+}
+
+/* HARD_GATE#665 USER_TOTAL_FAIL_REDO — composer compact rows + residual harden */
+.form-bottom-3 {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  gap: 6px 10px;
+  align-items: start; /* HARD_GATE#707 #7 top-align labels */
+  grid-column: 1 / -1;
+  min-width: 0;
+  width: 100%;
+  flex-direction: unset !important;
+}
+.form-bottom-3 > .field,
+.form-bottom-3 > label.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  min-width: 0;
+  width: auto;
+  align-items: stretch;
+}
+.form-bottom-3 .seg,
+.form-pair .seg {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 4px;
+  width: 100%;
+}
+.form-bottom-3 .seg-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  justify-content: center;
+  text-align: center;
+  padding: 0 6px;
+  min-height: 36px; /* HARD_GATE#715 equal with btn/input */
+  height: 36px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+.form-pair {
+  gap: 6px 10px !important;
+  align-items: start; /* HARD_GATE#707 #7 top-align labels */
+}
+.form-pair > .field,
+.form-pair > label.field {
+  gap: 4px;
+  margin: 0;
+  min-width: 0;
+}
+.form-pair input[type="number"],
+.form-pair input[type="text"],
+.form-bottom-3 input,
+.form-bottom-3 select {
+  min-height: 36px; /* HARD_GATE#715 equal control height */
+  height: 36px;
+  padding: 0 8px;
+  box-sizing: border-box;
+}
+/* HARD_GATE#707 #6: pair/number fields keep short width + unit breathing */
+.form-pair input[type="number"],
+.form-bottom-3 input[type="number"],
+.composer-col-right input[type="number"],
+.config-modal-fields input[type="number"] {
+  width: 5.5rem;
+  max-width: 7rem;
+  min-width: 4.5rem;
+  flex: 0 0 auto;
+}
+.form-pair .field-row,
+.form-bottom-3 .field-row,
+.composer-col-right .field-row {
+  justify-content: flex-start;
+  gap: 8px;
+}
+.composer-col-right > .form-bottom-3,
+.composer-col-right > .form-pair {
+  margin-bottom: 8px;
+}
+.composer-col-right .field-note {
+  margin-top: 2px;
+  line-height: 1.3;
+  font-size: 11px;
+}
+
+/* A11 / HARD_GATE#715: composer control row one 36px line */
+.desk-seg-tools .btn,
+.desk-seg-tools .btn-sm,
+.composer .btn,
+.composer .btn-sm,
+.composer .seg-btn,
+.composer select,
+.composer input[type="text"],
+.composer input[type="password"],
+.composer input[type="number"],
+.composer-actions .btn,
+.composer-actions .btn-sm,
+.composer-foot .btn,
+.composer-foot .btn-sm,
+.form-bottom-3 .seg-btn,
+.form-bottom-3 input,
+.form-bottom-3 select,
+.form-pair input,
+.form-pair select,
+.form-pair .seg-btn {
+  min-height: 36px !important;
+  height: 36px;
+  padding-top: 0;
+  padding-bottom: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+}
+.composer input[type="text"],
+.composer input[type="password"],
+.composer input[type="number"],
+.composer select,
+.form-bottom-3 input,
+.form-bottom-3 select,
+.form-pair input,
+.form-pair select {
+  justify-content: flex-start;
+}
+/* keep number short while equal-height */
+.composer input[type="number"],
+.form-pair input[type="number"],
+.form-bottom-3 input[type="number"] {
+  width: 5.5rem;
+  max-width: 7rem;
+  min-width: 4.5rem;
+}
+
+/* A10 card shorter; dual log|actions equal (HARD_GATE#665 B3/D) */
+.card {
+  width: 100%;
+  max-width: 100%;
+}
+.card-head {
+  padding: 10px 12px 6px;
+}
+.card-surface {
+  padding: 0 12px 8px;
+}
+.card-surface-dual {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+  gap: 8px;
+  align-items: stretch;
+  min-height: 132px;
+}
+.card-surface-dual .surface-log,
+.card-surface-dual .surface-actions,
+.card-surface-dual > * {
+  min-height: 124px;
+  height: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+.card-surface-dual .log-box.log-viewport,
+.card-surface-dual .log-viewport,
+.log-viewport {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 12.75em; /* HARD_GATE#829 =#810 true 6 lines */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* A12 empty red chrome fully gone (JS: .hidden or empty node; keep real error text visible) */
+.card-error:empty,
+.card-error.hidden,
+#config-modal-error:empty,
+#config-modal-error.hidden {
+  display: none !important;
+  visibility: hidden !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  min-height: 0 !important;
+  height: 0 !important;
+  max-height: 0 !important;
+  overflow: hidden !important;
+  color: transparent !important;
+  border-radius: 0 !important;
+}
+
+/* status color remains distinct on full-width cards */
+.timeline,
+.timeline-wrap,
+.card {
+  width: 100%;
+}
+.card.status-running {
+  border-left: 3px solid var(--running, #007956);
+}
+.card.status-error {
+  border-left: 3px solid var(--danger, #e40014);
+}
+.card.status-stopped {
+  border-left: 3px solid var(--text-dim, #79716b);
+}
+.card.status-idle {
+  border-left: 3px solid var(--border-strong, #d6d3d1);
+}
+
+/* center config modal residual */
+.config-modal,
+#config-modal {
+  display: none;
+}
+.config-modal.is-open,
+#config-modal.is-open,
+.config-modal[aria-hidden="false"],
+#config-modal[aria-hidden="false"] {
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+}
+.config-modal-card {
+  margin: auto;
+  max-width: min(920px, 96vw);
+}
+
+@media (max-width: 900px) {
+  .form-bottom-3 {
+    grid-template-columns: 1fr !important;
+  }
+  /* HARD_GATE#729 A: keep interval||traffic 2-col until narrow phone */
+  .card-surface-dual {
+    grid-template-columns: 1fr !important;
+  }
+}
+@media (max-width: 640px) {
+  .form-pair {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* HARD_GATE#729 C: composer/modal same-row controls one 36px visual line */
+.composer .btn,
+.composer .btn-sm,
+.composer .seg-btn,
+.composer-actions .btn,
+.composer-actions .btn-sm,
+.composer-foot .btn,
+.composer-foot .btn-sm,
+.desk-seg-tools .btn,
+.desk-seg-tools .btn-sm,
+.config-modal .btn,
+.config-modal .btn-sm,
+.config-modal .seg-btn,
+.form-pair input,
+.form-pair select,
+.form-pair .seg-btn,
+.form-bottom-3 input,
+.form-bottom-3 select,
+.form-bottom-3 .seg-btn {
+  min-height: 36px !important;
+  height: 36px !important;
+  box-sizing: border-box;
+}
+.composer .btn-sm,
+.composer-actions .btn-sm,
+.composer-foot .btn-sm,
+.desk-seg-tools .btn-sm,
+.config-modal .btn-sm {
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  font-size: 12px;
+}
+
+/* HARD_GATE#736/#761: desk box removed from DOM; log-only card */
+.card-surface-dual {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  gap: 0 !important;
+  align-items: stretch;
+  min-height: 0 !important;
+  margin-top: 2px;
+}
+.card-surface-dual .surface-log,
+.card-surface-dual .surface-actions,
+.card-surface-dual > * {
+  min-height: 0 !important;
+  height: auto !important;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+.card-surface-dual .log-box.log-viewport,
+.card-surface-dual .log-viewport,
+.log-viewport {
+  flex: 1 1 auto;
+  min-height: 12.75em !important; /* HARD_GATE#829 =#810 true 6 lines */
+  max-height: 12.75em !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+}
+.card-summary {
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+}
+
+/* HARD_GATE#781: refresh CTA = centered light-gray text link (CLI Proxy style) */
+.desk-seg.desk-seg-refresh,
+.desk-seg-refresh,
+.desk-refresh-wrap {
+  display: flex !important;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 0;
+  min-height: 0 !important;
+  padding: 6px 0 !important;
+  border: 0 !important;
+  border-radius: 0;
+  background: transparent !important;
+  box-shadow: none !important;
+  cursor: default;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  user-select: none;
+  text-align: center;
+}
+.desk-seg.desk-seg-refresh:hover,
+.desk-seg-refresh:hover,
+.desk-refresh-wrap:hover {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.desk-seg.desk-seg-refresh:active,
+.desk-seg-refresh:active {
+  background: transparent !important;
+  transform: none;
+}
+/* text-link CTA — no thick border / fill / capsule (class: .desk-refresh-cta.desk-refresh-link) */
+.desk-refresh-cta,
+button.desk-refresh-cta,
+.btn.desk-refresh-cta,
+.desk-refresh-link,
+button.desk-refresh-link,
+.btn.desk-refresh-cta.desk-refresh-link {
+  display: inline !important;
+  width: auto !important;
+  min-height: 0 !important;
+  height: auto !important;
+  margin: 0 auto !important;
+  padding: 2px 4px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--text-soft, #a8a29e) !important;
+  font-size: 13px !important;
+  font-weight: 400 !important;
+  line-height: 1.5;
+  text-align: center;
+  text-decoration: none !important;
+  box-shadow: none !important;
+  cursor: pointer !important;
+  pointer-events: auto !important;
+  opacity: 1 !important;
+  transition: color 0.15s ease, text-decoration-color 0.15s ease;
+}
+.desk-refresh-cta:hover:not(:disabled),
+button.desk-refresh-cta:hover:not(:disabled),
+.btn.desk-refresh-cta:hover:not(:disabled),
+.desk-refresh-link:hover:not(:disabled),
+button.desk-refresh-link:hover:not(:disabled) {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--text-dim, #79716b) !important;
+  text-decoration: underline !important;
+  text-underline-offset: 2px;
+}
+.desk-refresh-cta:active:not(:disabled),
+button.desk-refresh-cta:active:not(:disabled),
+.desk-refresh-link:active:not(:disabled) {
+  background: transparent !important;
+  color: var(--text, #1c1917) !important;
+  box-shadow: none !important;
+}
+.desk-refresh-cta:focus-visible,
+button.desk-refresh-cta:focus-visible,
+.desk-refresh-link:focus-visible {
+  outline: 1px solid rgba(120, 113, 108, 0.45);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.desk-refresh-cta:disabled,
+button.desk-refresh-cta:disabled,
+.desk-refresh-link:disabled,
+.desk-refresh-cta.is-loading,
+.desk-refresh-link.is-loading {
+  cursor: default !important;
+  opacity: 0.72 !important;
+  color: var(--text-soft, #a8a29e) !important;
+  text-decoration: none !important;
+  pointer-events: none !important;
+}
+/* locked list must not kill refresh CTA hit-target */
+.desk-seg.is-locked.desk-seg-refresh,
+.desk-seg[data-locked="1"].desk-seg-refresh,
+.desk-seg.is-locked .desk-refresh-cta,
+.desk-seg[data-locked="1"] .desk-refresh-cta,
+.desk-seg.is-locked .desk-refresh-link,
+.desk-seg[data-locked="1"] .desk-refresh-link {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  cursor: pointer !important;
+}
+.desk-seg-tools .btn,
+.desk-seg-tools .btn-sm {
+  min-height: 36px !important;
+  cursor: pointer;
+}
+/* HARD_GATE#784/#829: card log viewport fixed true 6 lines (=#810 12.75em); internal scroll */
+.card-surface-dual .log-box.log-viewport,
+.card-surface-dual .log-viewport,
+.log-box.log-viewport,
+.log-viewport {
+  flex: 0 0 12.75em !important;
+  flex-grow: 0 !important;
+  flex-shrink: 0 !important;
+  height: 12.75em !important; /* true 6 lines */
+  min-height: 12.75em !important;
+  max-height: 12.75em !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+  contain: layout paint size;
+  content-visibility: auto;
+  will-change: auto;
+  box-sizing: border-box !important;
+  cursor: pointer;
+}
+.card-surface-dual .surface-log {
+  /* log head + fixed 6-line viewport; avoid stretch growth on pushCard */
+  align-self: stretch;
+  overflow: hidden;
+}
+.log-viewport[title]::after {
+  content: none;
+}
+
+/* HARD_GATE#768: independent 登录 button (not primary 保存并保活) */
+#c-login,
+.btn-login,
+button.btn-login {
+  min-height: 36px !important;
+  height: 36px !important;
+  font-weight: 600;
+}
+.composer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.composer-actions #c-login,
+.composer-actions .btn-login {
+  order: 1;
+}
+.composer-actions #c-clear {
+  order: 0;
+}
+.composer-actions #c-submit {
+  order: 2;
+  margin-left: auto;
+}
+
+/* HARD_GATE#768: full log modal shell (viewport height above) */
+.log-panel-head .log-open-full,
+button.log-open-full {
+  min-height: 28px !important;
+  height: 28px !important;
+  padding: 0 8px !important;
+  font-size: 12px;
+}
+/* full log modal/drawer shell (JS may inject .log-full-modal) */
+.log-full-modal,
+.modal.log-full-modal,
+#log-full-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 18, 28, 0.45);
+}
+.log-full-modal[hidden],
+#log-full-modal[hidden],
+.log-full-modal.is-hidden {
+  display: none !important;
+}
+.log-full-dialog {
+  width: min(720px, 96vw);
+  max-height: min(80vh, 720px);
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 12px);
+  box-shadow: 0 16px 40px rgba(15, 18, 28, 0.18);
+  overflow: hidden;
+}
+.log-full-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev-2, #f7f7fa);
+}
+.log-full-head h3,
+.log-full-head .log-full-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.log-full-body,
+.log-full-box {
+  flex: 1 1 auto;
+  min-height: 240px;
+  max-height: calc(80vh - 56px);
+  overflow: auto;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  background: #fafafa;
+}
+.log-full-body .log-line,
+.log-full-box .log-line {
+  padding: 2px 0;
+}
+
+
+/* HARD_GATE#803 NEWACCT_LAYOUT_COMPACT + CARD_DESKTOP_BORDER
+   - short account/password + content-width login after pwd
+   - left: creds + large desk list; right: displayName + interval + segs
+   - config modal desktop area restores clear border container
+   hold #781 text-link CTA / #784+#810 log-viewport 12.75em / #768 login btn */
+.form-grid-composer {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.9fr) !important;
+  gap: 12px 16px;
+  align-items: start;
+}
+.composer-col {
+  gap: 10px;
+}
+.composer-col-left {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.composer-col-right {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+/* short account / password — not full-track giant bars */
+.composer-col-left > .field:has(#c-username),
+.composer-col-left > .field:has(#c-password),
+.composer #c-username,
+.composer #c-password,
+.composer-col-left #c-username,
+.composer-col-left #c-password {
+  max-width: 20rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+/* displayName on right stays compact when UI moves it */
+.composer-col-right #c-displayName,
+.composer #c-displayName {
+  max-width: 16rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+/* login after password: content-width, not full-bleed bar */
+.login-after-pwd {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: 20rem;
+  width: auto;
+}
+.login-after-pwd .field-note,
+.login-after-pwd .field-hint {
+  margin: 0;
+  max-width: 20rem;
+}
+#c-login,
+.composer #c-login,
+.btn-login,
+button.btn-login,
+.btn-login-inline,
+button.btn-login-inline {
+  width: auto !important;
+  min-width: 4.5rem;
+  max-width: 8rem;
+  padding-left: 14px !important;
+  padding-right: 14px !important;
+  flex: 0 0 auto;
+  align-self: flex-start;
+}
+/* left desk list takes remaining vertical space */
+.composer-col-left > .desktop-field,
+.composer-col-left .desktop-field {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  max-width: none;
+}
+.composer-col-left .desk-seg-wrap,
+.composer-col-left .desk-seg {
+  width: 100%;
+  max-width: none;
+  min-height: 140px;
+}
+.composer-col-left .desk-seg {
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+  box-sizing: border-box;
+}
+/* right: name + interval + segmented compact stack */
+.composer-col-right .form-bottom-3 {
+  gap: 8px !important;
+}
+.composer-col-right .form-pair {
+  gap: 8px;
+}
+.composer-col-right .seg {
+  width: 100%;
+  max-width: 18rem;
+}
+
+/* CARD_DESKTOP_BORDER: config modal desktop area clear bordered container */
+.config-desktop-field,
+.field.config-desktop-field,
+.desktop-field.config-desktop-field,
+#config-modal .desktop-field,
+#config-modal .config-desktop-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2, #f7f7fa);
+  box-sizing: border-box;
+}
+#config-modal .config-desktop-field > span,
+.config-desktop-field > span {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 500;
+}
+#config-modal .desk-seg-wrap,
+.config-desktop-field .desk-seg-wrap {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-sm);
+  background: #fff;
+  padding: 6px;
+  box-sizing: border-box;
+}
+#config-modal .desk-seg,
+.config-desktop-field .desk-seg,
+#config-modal .desk-seg-refresh {
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2, #f7f7fa);
+  min-height: 88px;
+  box-sizing: border-box;
+}
+/* selected desk item chrome stays visible inside bordered list */
+#config-modal .desk-seg .seg-btn.active,
+.config-desktop-field .desk-seg .seg-btn.active,
+#config-modal .desk-item.active,
+.config-desktop-field .desk-item.active {
+  border-color: var(--accent, #2563eb);
+  box-shadow: 0 0 0 1px var(--accent, #2563eb);
+}
+/* config modal login after pwd also short */
+#config-modal .login-after-pwd,
+.login-after-pwd.field {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  max-width: 22rem;
+}
+#config-modal .btn-login-inline,
+#config-modal .login-after-pwd .btn {
+  width: auto !important;
+  min-width: 4.5rem;
+  max-width: 8rem;
+  padding-left: 14px !important;
+  padding-right: 14px !important;
+}
+/* config modal short username/password when present */
+#config-modal input[data-key="username"],
+#config-modal input[data-key="password"],
+#config-modal input[name="username"],
+#config-modal input[name="password"] {
+  max-width: 20rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+@media (max-width: 860px) {
+  .form-grid-composer {
+    grid-template-columns: 1fr !important;
+  }
+  .composer #c-username,
+  .composer #c-password,
+  .composer #c-displayName,
+  .composer-col-left #c-username,
+  .composer-col-left #c-password {
+    max-width: 100%;
+  }
+  .login-after-pwd {
+    max-width: 100%;
+  }
+}
+
+
+/* HARD_GATE#810 CARD_LOG_6LINES_TALLER
+   True 6-line card log viewport (sole system 12.75em / 188px after #829 purge).
+   Keep fixed height + internal scroll; no whole-card reflow. DBLCLICK = JS sole. */
+.card-surface-dual .log-box.log-viewport,
+.card-surface-dual .log-viewport,
+.log-box.log-viewport,
+.log-viewport {
+  /* 12px mono: line ~ (1.45*12 + 4pad)=21.4px; *6 + box pad 16 ≈ 144px ≈ 12em */
+  flex: 0 0 12.75em !important;
+  flex-grow: 0 !important;
+  flex-shrink: 0 !important;
+  height: 12.75em !important;
+  min-height: 12.75em !important;
+  max-height: 12.75em !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+  contain: layout paint size;
+  box-sizing: border-box !important;
+  line-height: 1.45;
+  cursor: pointer; /* dblclick opens full log — JS */
+}
+
+.card-surface-dual .surface-log {
+  /* head + true 6-line viewport; card taller as a whole */
+  min-height: 188px !important;
+  height: auto;
+  align-self: stretch;
+  overflow: hidden;
+}
+
+.card-surface-dual .surface-log .log-box.log-viewport,
+.card-surface-dual .surface-log .log-viewport {
+  flex: 0 0 12.75em !important;
+}
+
+/* slightly taller dual surface so left/right stay balanced */
+.card-surface-dual {
+  min-height: 188px;
+}
+
+/* keep log lines compact but readable for 6-count */
+.log-viewport .log-line,
+.card-surface-dual .log-viewport .log-line {
+  line-height: 1.45;
+  padding: 2px 0;
+  min-height: 0;
+}
+
+
+/* HARD_GATE#827 CARD_LOG_MODAL_CLOSE_BTN
+   X must be clickable once; mask must not cover close; hold #810 dblclick open. */
+.log-full-modal,
+.modal.log-full-modal,
+#log-full-modal {
+  z-index: 120 !important; /* above toast(60)/config(80) */
+  pointer-events: auto !important;
+}
+.log-full-modal .log-full-dialog,
+.log-full-modal .log-full-card,
+.log-full-modal .modal-card.log-full-dialog,
+#log-full-modal .log-full-dialog,
+#log-full-modal .log-full-card {
+  position: relative;
+  z-index: 121 !important;
+  pointer-events: auto !important;
+  overflow: visible; /* do not clip close hit box */
+}
+.log-full-modal .modal-head,
+.log-full-modal .log-full-head,
+#log-full-modal .modal-head {
+  position: relative;
+  z-index: 122 !important;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  pointer-events: auto !important;
+}
+#log-full-close,
+.log-full-modal #log-full-close,
+.log-full-modal .modal-x,
+.log-full-modal button.modal-x,
+#log-full-modal .modal-x {
+  position: relative;
+  z-index: 130 !important;
+  pointer-events: auto !important;
+  cursor: pointer !important;
+  min-width: 40px !important;
+  min-height: 40px !important;
+  width: 40px;
+  height: 40px;
+  padding: 0 !important;
+  margin: 0;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px !important;
+  line-height: 1 !important;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text, #18181b);
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+#log-full-close:hover,
+.log-full-modal #log-full-close:hover,
+.log-full-modal .modal-x:hover,
+#log-full-modal .modal-x:hover {
+  background: rgba(24, 24, 27, 0.08) !important;
+  border-color: var(--border, #e4e4e7);
+  color: var(--text, #18181b);
+}
+#log-full-close:active,
+.log-full-modal #log-full-close:active,
+.log-full-modal .modal-x:active,
+#log-full-modal .modal-x:active {
+  background: rgba(24, 24, 27, 0.14) !important;
+  transform: scale(0.96);
+}
+#log-full-close:focus-visible,
+.log-full-modal .modal-x:focus-visible {
+  outline: 2px solid #4f46e5;
+  outline-offset: 2px;
+}
+/* body/log area must not overlay the head/close */
+.log-full-modal .log-full-body,
+.log-full-modal .log-full-box,
+#log-full-modal .log-full-body,
+#log-full-body {
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
+}
+/* when modal open, keep dialog above any pseudo-mask; click on backdrop still receives events on modal root (pm handles close) */
+.log-full-modal:not([hidden]):not(.hidden) > .log-full-dialog,
+.log-full-modal:not([hidden]):not(.hidden) > .log-full-card,
+#log-full-modal:not([hidden]):not(.hidden) > .modal-card {
+  pointer-events: auto !important;
+}

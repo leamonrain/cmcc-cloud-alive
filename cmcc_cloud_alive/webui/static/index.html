@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>移动云电脑保活工具</title>
+  <meta name="color-scheme" content="light" />
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <div class="app" id="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"></div>
+        <div class="brand-text">
+          <h1>移动云电脑保活</h1>
+          <p class="brand-sub">管理台 · 关掉页面保活仍在后台运行</p>
+        </div>
+      </div>
+      <div class="top-stats" id="top-stats" aria-live="polite">
+        <span class="stat" data-k="total">账号 0</span>
+        <span class="stat stat-run" data-k="running">保活 0</span>
+        <span class="stat" data-k="idle">空闲 0</span>
+        <span class="stat stat-err" data-k="error">异常 0</span>
+      </div>
+      <div class="top-actions">
+        <button type="button" class="btn btn-ghost" id="btn-refresh" title="刷新">刷新</button>
+        <button type="button" class="btn btn-ghost" id="btn-help" title="查看帮助">查看帮助</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <section class="composer" id="composer" aria-label="新建账号并开始保活">
+        <div class="composer-head">
+          <h2>新建账号</h2>
+          <p class="hint">一次填全配置；可先「登录」拉取云桌面，或直接「保存并保活」。</p>
+        </div>
+        <form id="composer-form" autocomplete="off" novalidate>
+          <div class="form-grid form-grid-composer">
+            <div class="composer-col composer-col-left">
+              <!-- HARD_GATE#803: left = short creds + login + large desktop; hold #784/#781 -->
+              <label class="field field-compact">
+                <span>账号 <em>*</em></span>
+                <input type="text" name="username" id="c-username" placeholder="移动云账号" required />
+              </label>
+              <div class="field field-compact login-after-pwd" role="group" aria-label="密码与登录">
+                <span>密码 <em>*</em></span>
+                <div class="field-row">
+                  <input type="text" autocomplete="new-password" name="password" id="c-password" placeholder="登录密码" required />
+                  <button type="button" class="btn btn-secondary btn-login" id="c-login">登录</button>
+                </div>
+                <p class="field-note">登录后拉取官方云桌面列表；与「保存并保活」不同</p>
+              </div>
+              <label class="field desktop-field desktop-field-lg">
+                <span>云桌面列表</span>
+                <div class="desk-seg-wrap">
+                  <div class="desk-seg is-empty desk-seg-refresh" id="c-desktop" data-locked="1" aria-disabled="true">
+                    <button type="button" class="desk-refresh-cta" data-act="composer-desktops" title="点击此处刷新云桌面列表" aria-label="点击此处刷新云桌面列表" disabled>点击此处刷新云桌面列表</button>
+                  </div>
+                </div>
+                <input type="hidden" id="c-userServiceId" value="" />
+                <input type="hidden" id="c-desktopLabel" value="" />
+                <p class="field-note" id="c-desktop-note">登录成功后展示官方 list_clouds（名称 / id | spuCode：xxx）</p>
+              </label>
+            </div>
+            <div class="composer-col composer-col-right">
+              <!-- HARD_GATE#803: displayName right, beside interval/traffic -->
+              <label class="field field-compact">
+                <span>显示名</span>
+                <input type="text" name="displayName" id="c-displayName" placeholder="可选，默认用账号" />
+              </label>
+              <div class="form-pair span-2" role="group" aria-label="保活间隔 / 单次流量持续">
+                <label class="field">
+                  <span>保活间隔</span>
+                  <div class="field-row">
+                    <input type="number" name="intervalMin" id="c-intervalMin" min="1" max="1440" value="5" />
+                    <span class="unit">分钟</span>
+                  </div>
+                </label>
+                <label class="field">
+                  <span>单次流量持续</span>
+                  <div class="field-row">
+                    <input type="number" name="trafficSec" id="c-trafficSec" min="10" max="3600" value="60" />
+                    <span class="unit">秒</span>
+                  </div>
+                </label>
+              </div>
+              <div class="form-bottom-3 span-2" role="group" aria-label="客户端 / 模式 / 用户协议">
+                <label class="field">
+                  <span>客户端类型</span>
+                  <div class="seg" role="group" aria-label="客户端类型">
+                    <button type="button" class="seg-btn active" data-client="linux">Linux</button>
+                    <button type="button" class="seg-btn" data-client="windows">Windows</button>
+                    <button type="button" class="seg-btn" data-client="mac">Mac</button>
+                  </div>
+                  <p class="field-note">模拟哪端官方客户端登录（一般保持 Linux）</p>
+                </label>
+                <label class="field">
+                  <span>模式</span>
+                  <div class="seg" role="group" aria-label="模式">
+                    <button type="button" class="seg-btn active" data-mode="live">永久</button>
+                    <button type="button" class="seg-btn" data-mode="dry-run">单轮</button>
+                  </div>
+                </label>
+                <label class="field">
+                  <span>用户协议选择</span>
+                  <div class="seg" role="group" aria-label="用户协议选择">
+                    <button type="button" class="seg-btn active" data-protocol="ZTE">中兴</button>
+                    <button type="button" class="seg-btn" data-protocol="SCG">深信服</button>
+                  </div>
+                  <p class="field-note">仅作保活启动参数；卡面「用户协议」显示此处选择</p>
+                </label>
+              </div>
+            </div>
+          </div>
+          <div class="composer-foot">
+            <p class="composer-msg" id="composer-msg" role="status"></p>
+            <div class="composer-actions">
+              <button type="button" class="btn btn-ghost" id="c-clear">清空</button>
+              <button type="submit" class="btn btn-primary" id="c-submit">保存并保活</button>
+            </div>
+          </div>
+        </form>
+      </section>
+
+      <section class="timeline-wrap">
+        <div class="timeline-head">
+          <h2>账号时间线</h2>
+          <p class="hint" id="timeline-hint">多账号并列运行；日志与配置按钮常显，点「配置」才展开账号表单。</p>
+        </div>
+        <div class="timeline" id="timeline" aria-live="polite"></div>
+        <div class="empty" id="empty-state" hidden>
+          <p>还没有账号。在上方填好信息，点「保存并保活」。</p>
+        </div>
+      </section>
+
+      <section class="global-log-panel" aria-label="运行日志">
+        <div class="panel-head">
+          <h3>运行日志</h3>
+          <button type="button" class="btn btn-ghost" id="btn-clear-log">清空</button>
+        </div>
+        <div class="log-box log-viewport" id="global-log"></div>
+        <p class="sys-info" id="sys-info"></p>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal hidden" id="modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-card">
+      <h3 id="modal-title">确认</h3>
+      <p id="modal-body">确定？</p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" id="modal-cancel">取消</button>
+        <button type="button" class="btn btn-danger" id="modal-ok">确定删除</button>
+      </div>
+    </div>
+  </div>
+
+  
+  <div class="modal hidden" id="config-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="config-modal-title">
+    <div class="modal-card config-modal-card">
+      <div class="modal-head">
+        <h2 id="config-modal-title">配置</h2>
+        <button type="button" class="btn btn-ghost modal-x" id="config-modal-close" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body" id="config-modal-body"></div>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="help-modal" aria-hidden="true" role="dialog" aria-modal="true">
+    <div class="modal-card modal-wide">
+      <h3>使用说明</h3>
+      <div class="help-body">
+        <p>在同一页完成账号配置与保活控制，无需向导分步。</p>
+        <ul>
+          <li>上方 Composer 填账号密码等，主按钮「保存并保活」。</li>
+          <li>下方卡片可并列管理多个账号：开始 / 停止 / 配置 / 刷新日志；删除账号在配置弹窗内。</li>
+          <li>关掉浏览器页面后，已启动的保活仍在后台运行。</li>
+          <li>客户端类型一般保持 Linux；协议选中兴或深信服。</li>
+        </ul>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-primary" id="help-close">知道了</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal log-modal log-full-modal hidden" id="log-full-modal" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="log-full-title">
+    <div class="modal-card log-full-dialog log-full-card log-modal-card">
+      <div class="log-full-head modal-head">
+        <h2 id="log-full-title" class="log-full-title">完整日志</h2>
+        <button type="button" class="btn btn-ghost modal-x" id="log-full-close" aria-label="关闭" title="关闭">×</button>
+      </div>
+      <div class="log-box log-full-body log-full-box card-log" id="log-full-body" data-log-modal-body="1" role="log" aria-live="polite"></div>
+    </div>
+  </div>
+
+  <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

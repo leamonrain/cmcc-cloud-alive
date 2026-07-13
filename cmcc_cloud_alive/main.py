@@ -15,13 +15,19 @@ def _print(obj):
 
 
 def _product_summary_line(report):
-    kind = report.get("kind") or "-"
+    # Label by protocol kind so interactive logs never look like a retired CLI path.
+    # WebUI/simple path is hand-selected SCG/ZTE only; keep protocol logic untouched.
+    kind = str(report.get("kind") or "-").strip().lower() or "-"
+    if kind in ("scg", "zte"):
+        tag = f"{kind}-keepalive"
+    else:
+        tag = "keepalive"
     ok = report.get("ok")
     stage = report.get("stage") or "-"
     duration = report.get("duration")
     err = report.get("error") or ""
     return (
-        f"[product-keepalive] kind={kind} ok={ok} stage={stage} duration={duration}s"
+        f"[{tag}] kind={kind} ok={ok} stage={stage} duration={duration}s"
         + (f" error={err}" if err else "")
     )
 
@@ -1518,11 +1524,25 @@ def _run_scg_keepalive(args, auth, route, vm_id, report, started):
     return report
 
 
+def _zte_session_invalid(err_text):
+    """True when ZTE material/startDesktop reports session-invalid 1000100."""
+    text = str(err_text or "")
+    low = text.lower()
+    return (
+        "1000100" in text
+        or "会话失效" in text
+        or "session invalid" in low
+        or "session_invalid" in low
+    )
+
+
 def _run_zte_keepalive(args, auth, route, vm_id, report, started):
     """Dispatch to the ZTE material control-plane (B keepalive.go ZTE branch).
 
     ``zte_route`` is owned by w1 (P10); import defensively so a transient
     import error does not crash the CLI — it reports a redacted next-step.
+    On ZTE 1000100 / session-invalid, refresh token + firmAuth once in-round
+    then retry material exactly once (mirrors SCG token refresh behaviour).
     """
     import time
     report["stage"] = "zte-keepalive"
@@ -1534,9 +1554,49 @@ def _run_zte_keepalive(args, auth, route, vm_id, report, started):
         report["duration"] = round(time.monotonic() - started, 3)
         _emit_product_report(args, report)
         return report
+
+    firm = None
+    material = None
     try:
         firm = zte_route.ZTEFirmAuth.from_auth_dict(auth)
         material = zte_route.run_material(firm, target_vm_id=vm_id)
+        # Same-round one-shot retry: session invalid → ensure_token → firmAuth → material.
+        if (not material.ok) and _zte_session_invalid(material.error):
+            report["stage"] = "zte-session-refresh"
+            print(
+                "[%s] ZTE session invalid (1000100); ensure_token + firmAuth + retry once"
+                % core.short_time(),
+                flush=True,
+            )
+            try:
+                from . import token as token_mod
+                token_mod.ensure_token(getattr(args, "state", None), relogin=True)
+            except Exception as tok_exc:  # noqa: BLE001 - still attempt firmAuth refresh
+                print(
+                    "[%s] ZTE ensure_token during 1000100 retry failed: %s"
+                    % (core.short_time(), tok_exc),
+                    flush=True,
+                )
+            try:
+                selected = cloud.selected_user_service_id(
+                    getattr(args, "state", None),
+                    getattr(args, "user_service_id", None),
+                )
+                ns_args = core.argparse.Namespace(
+                    state=getattr(args, "state", None),
+                    user_service_id=selected,
+                )
+                auth = core.get_firm_auth(ns_args)
+                firm = zte_route.ZTEFirmAuth.from_auth_dict(auth)
+                material = zte_route.run_material(firm, target_vm_id=vm_id)
+                report["sessionRefresh"] = True
+            except Exception as retry_exc:  # noqa: BLE001 - surface refresh failure
+                report["error"] = "1000100 retry failed: %s" % retry_exc
+                report["nextStep"] = "re-login / re-select desktop, then retry ZTE"
+                report["duration"] = round(time.monotonic() - started, 3)
+                report["sessionRefresh"] = False
+                _emit_product_report(args, report)
+                return report
     except Exception as exc:  # noqa: BLE001 - surface any ZTE failure
         report["error"] = "%s: %s" % (type(exc).__name__, exc)
         report["nextStep"] = "inspect ZTE material stage %s" % report["stage"]

@@ -1,0 +1,2737 @@
+/* CMCC Alive WebUI — multi-account console */
+(function () {
+  "use strict";
+
+  const TOKEN_KEY = "cmcc_webui_token";
+
+  const state = {
+    profiles: [],
+    configPid: null,
+    drafts: Object.create(null),
+    logs: Object.create(null),
+    globalLog: [],
+    busy: Object.create(null),
+    cardMsg: Object.create(null),
+    desktops: Object.create(null),
+    jobsById: Object.create(null),
+    jobsByProfile: Object.create(null),
+    tokenRequired: false,
+    es: null,
+    sseNeedTokenLogged: false,
+    logModalPid: null,
+    logModalReturnFocus: null,
+    composer: {
+      protocol: "ZTE",
+      clientProfile: "linux",
+      mode: "live",
+      userServiceId: "",
+      desktopLabel: "",
+      profileId: "",
+    },
+  };
+
+  function $(sel, root) {
+    return (root || document).querySelector(sel);
+  }
+
+  function $$(sel, root) {
+    return Array.prototype.slice.call((root || document).querySelectorAll(sel));
+  }
+
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function toast(msg, isError) {
+    const el = $("#toast");
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.toggle("error", !!isError);
+    el.classList.remove("hidden");
+    clearTimeout(toast._t);
+    toast._t = setTimeout(function () {
+      el.classList.add("hidden");
+    }, 2800);
+  }
+
+  function getToken() {
+    try {
+      return localStorage.getItem(TOKEN_KEY) || "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function setToken(v) {
+    try {
+      if (v) localStorage.setItem(TOKEN_KEY, v);
+      else localStorage.removeItem(TOKEN_KEY);
+    } catch (_) {}
+  }
+
+  function humanError(err, fallback) {
+    if (!err) return fallback || "操作失败";
+    if (typeof err === "string") return err;
+    const code = err.code || err.error || err.error_code || "";
+    const msg = err.message || err.detail || err.error_message || "";
+    const next =
+      err.nextStep ||
+      err.next_step ||
+      (err.payload && (err.payload.nextStep || err.payload.next_step)) ||
+      (err.data && (err.data.nextStep || err.data.next_step)) ||
+      "";
+    const map = {
+      PROFILE_IN_USE: "该账号已在保活中，请先停止再启动",
+      VALIDATION: "填写有误，请检查账号、密码或配置",
+      NOT_FOUND: "账号不存在或已删除",
+      UNAUTHORIZED: "未授权，请检查访问令牌",
+      FORBIDDEN: "没有权限执行此操作",
+      LIVE_DISABLED: "当前环境未开启长期保活，请改用「单轮」或联系管理员",
+      LOGIN_FAILED: "登录失败，请检查账号密码",
+      AUTH_FAILED: "账号或密码错误",
+      AUTH_REQUIRED: "需要先登录账号",
+      LOGIN_REQUIRED: "请先登录账号",
+      DESKTOP_REQUIRED: "请先选择云桌面再启动",
+      NETWORK: "网络异常，请稍后重试",
+    };
+    let base = "";
+    if (code && map[code]) {
+      base = map[code];
+    } else if (msg && typeof msg === "string") {
+      if (/PROFILE_IN_USE/i.test(msg)) base = map.PROFILE_IN_USE;
+      else if (/LIVE_DISABLED/i.test(msg)) base = map.LIVE_DISABLED;
+      else if (/AUTH_REQUIRED/i.test(msg)) base = map.AUTH_REQUIRED;
+      else if (/LOGIN_REQUIRED/i.test(msg)) base = map.LOGIN_REQUIRED;
+      else if (/JSON|\{|\}|\[|\]/.test(msg) && msg.length > 120) {
+        base = fallback || "服务返回异常，请稍后重试";
+      } else base = msg;
+    } else {
+      base = fallback || "操作失败，请稍后重试";
+    }
+    if (next) {
+      const n = String(next);
+      if (base.indexOf(n) < 0) base = base + " · 下一步：" + n;
+    }
+    return base;
+  }
+
+  async function api(path, opts) {
+    opts = opts || {};
+    const headers = Object.assign(
+      { Accept: "application/json" },
+      opts.headers || {}
+    );
+    const token = getToken();
+    if (token) headers.Authorization = "Bearer " + token;
+    let body = opts.body;
+    if (body != null && typeof body !== "string") {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify(body);
+    }
+    let res;
+    try {
+      res = await fetch(path, {
+        method: opts.method || "GET",
+        headers: headers,
+        body: body,
+      });
+    } catch (e) {
+      const err = new Error("网络异常，请稍后重试");
+      err.code = "NETWORK";
+      throw err;
+    }
+    const text = await res.text();
+    let data = null;
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch (_) {
+        data = { raw: text };
+      }
+    }
+    if (!res.ok) {
+      const err = new Error(
+        humanError(
+          data || {},
+          "请求失败（" + res.status + "）"
+        )
+      );
+      err.status = res.status;
+      err.code = (data && (data.code || data.error || data.error_code)) || "";
+      err.nextStep =
+        data &&
+        (data.nextStep ||
+          data.next_step ||
+          (data.data && (data.data.nextStep || data.data.next_step)));
+      err.payload = data;
+      err.data = data;
+      err.message = humanError(err, err.message);
+      throw err;
+    }
+    return data;
+  }
+
+  function statusOf(p) {
+    const s = String(
+      (p && (p.status || (p.job && p.job.status) || p.jobStatus)) || "idle"
+    ).toLowerCase();
+    if (s === "running" || s === "alive" || s === "starting") return "running";
+    if (s === "error" || s === "failed" || s === "fail") return "error";
+    if (s === "stopped" || s === "stop" || s === "exited") return "stopped";
+    return "idle";
+  }
+
+  function statusLabel(st) {
+    if (st === "running") return "保活中";
+    if (st === "error") return "异常";
+    if (st === "stopped") return "已停止";
+    return "空闲";
+  }
+
+  function protocolLabel(v) {
+    const u = String(v || "ZTE").toUpperCase();
+    if (u === "SCG") return "深信服";
+    return "中兴";
+  }
+
+  function clientLabel(v) {
+    const c = String(v || "linux").toLowerCase();
+    if (c === "windows") return "Windows";
+    if (c === "mac") return "Mac";
+    return "Linux";
+  }
+
+  function modeLabel(v) {
+    /* HARD_GATE#718: button/label text forever = 永久 / 单轮 only */
+    const m = String(v || "live").toLowerCase();
+    if (m === "dry-run" || m === "dryrun" || m === "once" || m === "single") return "单轮";
+    return "永久";
+  }
+
+  function modeApi(v) {
+    const m = String(v || "live").toLowerCase();
+    if (m === "dry-run" || m === "dryrun" || m === "once" || m === "single") {
+      return "dry-run";
+    }
+    return "live";
+  }
+
+  function jobOf(p) {
+    if (!p) return null;
+    if (p.job && typeof p.job === "object") return p.job;
+    if (p.jobId && state.jobsById[p.jobId]) return state.jobsById[p.jobId];
+    if (p.id && state.jobsByProfile[p.id]) return state.jobsByProfile[p.id];
+    return null;
+  }
+
+  function ensureDraft(pid, p) {
+    const job = jobOf(p);
+    const protocol =
+      (p && p.protocol) ||
+      (job && job.protocol) ||
+      "ZTE";
+    const mode =
+      (p && p.mode) ||
+      (job && job.mode) ||
+      "live";
+    if (!state.drafts[pid]) {
+      state.drafts[pid] = {
+        displayName: (p && p.displayName) || "",
+        username: "",
+        password: "",
+        protocol: protocol,
+        lastOfficialProtocol: protocol,
+        clientProfile: (p && p.clientProfile) || "linux",
+        mode: mode,
+        intervalMin: 5,
+        trafficSec: 60,
+        durationSec: 0,
+        userServiceId: (p && p.userServiceId) || "",
+        desktopLabel: (p && p.desktopLabel) || "",
+        spuCode: (p && (p.spuCode || p.spu_code)) || "",
+      };
+    } else if (p) {
+      const d = state.drafts[pid];
+      if (!d.displayName && p.displayName) d.displayName = p.displayName;
+      if (!d.userServiceId && p.userServiceId) d.userServiceId = p.userServiceId;
+      if (!d.desktopLabel && p.desktopLabel) d.desktopLabel = p.desktopLabel;
+      if (!d.spuCode && p && (p.spuCode || p.spu_code)) {
+        d.spuCode = p.spuCode || p.spu_code;
+      }
+      if (!d.clientProfile && p.clientProfile) d.clientProfile = p.clientProfile;
+      if (p.protocol) {
+        d.protocol = p.protocol;
+        d.lastOfficialProtocol = p.protocol;
+      } else if (job && job.protocol) {
+        d.protocol = job.protocol;
+        if (!d.lastOfficialProtocol) d.lastOfficialProtocol = job.protocol;
+      }
+      if (!d.lastOfficialProtocol) d.lastOfficialProtocol = d.protocol || "ZTE";
+      if (p.mode) d.mode = p.mode;
+      else if (job && job.mode) d.mode = job.mode;
+    }
+    if (!state.drafts[pid].lastOfficialProtocol) {
+      state.drafts[pid].lastOfficialProtocol = state.drafts[pid].protocol || "ZTE";
+    }
+    return state.drafts[pid];
+  }
+
+  function pushGlobal(line, level) {
+    state.globalLog.push({
+      at: new Date().toISOString(),
+      line: String(line || ""),
+      level: level || "info",
+    });
+    if (state.globalLog.length > 300) {
+      state.globalLog = state.globalLog.slice(-300);
+    }
+    renderGlobalLog();
+  }
+
+  /* HARD_GATE#768-B: card-only keepalive/job log sink (never global) */
+  function patchCardStatus(pid) {
+    // HARD_GATE#784: update status chrome only; leave log DOM untouched
+    if (!pid) return;
+    const p = state.profiles.find(function (x) {
+      return x.id === pid;
+    });
+    if (!p) return;
+    const st = statusOf(p);
+    const card = document.querySelector('article.card[data-id="' + pid + '"]');
+    if (!card) return;
+    card.className = card.className
+      .split(/\s+/)
+      .filter(function (c) {
+        return c && c.indexOf("status-") !== 0;
+      })
+      .concat(["status-" + st])
+      .join(" ");
+    if (card.className.indexOf("card") < 0) card.className = "card " + card.className;
+    // ensure base card class retained
+    if (!/\bcard\b/.test(card.className)) card.className = "card " + card.className;
+    const badge = card.querySelector(".status-badge, .card-status, [data-status-label]");
+    if (badge) badge.textContent = statusLabel(st);
+    const open = state.configPid === pid;
+    if (open) card.classList.add("is-configuring");
+    else card.classList.remove("is-configuring");
+    // busy buttons
+    const busy = !!state.busy[pid];
+    const acts = card.querySelectorAll("[data-act]");
+    for (let i = 0; i < acts.length; i++) {
+      if (busy) acts[i].setAttribute("disabled", "disabled");
+      else acts[i].removeAttribute("disabled");
+    }
+    // start/stop visibility if present
+    const startBtn = card.querySelector('[data-act="start"]');
+    const stopBtn = card.querySelector('[data-act="stop"]');
+    if (startBtn && stopBtn) {
+      if (st === "running") {
+        startBtn.hidden = true;
+        stopBtn.hidden = false;
+      } else {
+        startBtn.hidden = false;
+        stopBtn.hidden = true;
+      }
+    }
+  }
+
+  function pushCard(pid, line, at) {
+    // HARD_GATE#784 CARD_LOG_NO_SPAM: incremental append; keep scrollTop; no full panel rebuild
+    if (!pid || !line) return;
+    const arr = state.logs[pid] || (state.logs[pid] = []);
+    const entry = { at: at || new Date().toISOString(), line: String(line) };
+    arr.push(entry);
+    if (arr.length > 300) state.logs[pid] = arr.slice(-300);
+    const panel = $('[data-log="' + pid + '"]');
+    if (panel) {
+      const stickBottom =
+        panel.scrollHeight - panel.scrollTop - panel.clientHeight < 24;
+      const prevTop = panel.scrollTop;
+      // remove empty/pad fillers before append
+      const empty = panel.querySelector(".log-empty");
+      if (empty) empty.remove();
+      const pads = panel.querySelectorAll(".log-line-pad");
+      for (let i = 0; i < pads.length; i++) pads[i].remove();
+      const raw = formatLogDisplayLine(entry);
+      const level = classifyLogLine(raw);
+      const row = document.createElement("div");
+      row.className = "log-line log-line-py " + level;
+      const span = document.createElement("span");
+      span.className = "log-text";
+      span.textContent = raw;
+      row.appendChild(span);
+      panel.appendChild(row);
+      // card viewport: keep last 6 real lines + pad to 6
+      const real = panel.querySelectorAll(".log-line:not(.log-line-pad)");
+      while (real.length > 6) {
+        real[0].remove();
+        // NodeList is live in some browsers; re-query via length shrink
+        break;
+      }
+      let reals = panel.querySelectorAll(".log-line:not(.log-line-pad)");
+      while (reals.length > 6) {
+        reals[0].remove();
+        reals = panel.querySelectorAll(".log-line:not(.log-line-pad)");
+      }
+      reals = panel.querySelectorAll(".log-line:not(.log-line-pad)");
+      while (reals.length + panel.querySelectorAll(".log-line-pad").length < 6) {
+        const pad = document.createElement("div");
+        pad.className = "log-line log-line-pad";
+        pad.setAttribute("aria-hidden", "true");
+        const ps = document.createElement("span");
+        ps.className = "log-text";
+        ps.innerHTML = "&nbsp;";
+        pad.appendChild(ps);
+        panel.appendChild(pad);
+      }
+      if (stickBottom) panel.scrollTop = panel.scrollHeight;
+      else panel.scrollTop = prevTop;
+    }
+    if (state.logModalPid === pid) {
+      const body = $("#log-full-body") || $("#log-modal-body");
+      if (body) {
+        const stick =
+          body.scrollHeight - body.scrollTop - body.clientHeight < 24;
+        const prev = body.scrollTop;
+        const raw = formatLogDisplayLine(entry);
+        const level = classifyLogLine(raw);
+        const row = document.createElement("div");
+        row.className = "log-line log-line-py " + level;
+        const span = document.createElement("span");
+        span.className = "log-text";
+        span.textContent = raw;
+        row.appendChild(span);
+        body.appendChild(row);
+        if (stick) body.scrollTop = body.scrollHeight;
+        else body.scrollTop = prev;
+      }
+    }
+  }
+
+  function renderGlobalLog() {
+    const box = $("#global-log");
+    if (!box) return;
+    const lines = state.globalLog.slice(-200);
+    if (!lines.length) {
+      box.innerHTML = '<div class="log-empty">暂无日志</div>';
+      return;
+    }
+    box.innerHTML = lines
+      .map(function (x) {
+        const t = (x.at || "").slice(11, 19);
+        return (
+          '<div class="log-line ' +
+          esc(x.level || "") +
+          '"><time>' +
+          esc(t) +
+          "</time><span>" +
+          esc(x.line) +
+          "</span></div>"
+        );
+      })
+      .join("");
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function renderStats() {
+    const counts = { total: 0, running: 0, idle: 0, error: 0 };
+    for (let i = 0; i < state.profiles.length; i++) {
+      const p = state.profiles[i];
+      counts.total += 1;
+      const st = statusOf(p);
+      if (st === "running") counts.running += 1;
+      else if (st === "error") counts.error += 1;
+      else counts.idle += 1;
+    }
+    const root = $("#top-stats");
+    if (!root) return;
+    const map = {
+      total: "账号 " + counts.total,
+      running: "保活 " + counts.running,
+      idle: "空闲 " + counts.idle,
+      error: "异常 " + counts.error,
+    };
+    $$("[data-k]", root).forEach(function (el) {
+      const k = el.getAttribute("data-k");
+      if (map[k] != null) el.textContent = map[k];
+    });
+  }
+
+  function classifyLogLine(line) {
+    const s = String(line || "").toLowerCase();
+    if (
+      s.indexOf("token") >= 0 ||
+      s.indexOf("refreshtoken") >= 0 ||
+      s.indexOf("refresh token") >= 0 ||
+      s.indexOf("刷新令牌") >= 0 ||
+      s.indexOf("令牌刷新") >= 0
+    ) {
+      return "token";
+    }
+    if (
+      s.indexOf("5xx") >= 0 ||
+      s.indexOf(" http 5") >= 0 ||
+      s.indexOf("status=5") >= 0 ||
+      s.indexOf("soft recover") >= 0 ||
+      s.indexOf("soft-recover") >= 0 ||
+      s.indexOf("软恢复") >= 0 ||
+      /\b5\d\d\b/.test(s)
+    ) {
+      return "warn";
+    }
+    if (
+      s.indexOf("error") >= 0 ||
+      s.indexOf("fail") >= 0 ||
+      s.indexOf("exception") >= 0 ||
+      s.indexOf("失败") >= 0 ||
+      s.indexOf("异常") >= 0
+    ) {
+      return "error";
+    }
+    return "";
+  }
+
+  function formatLogDisplayLine(x) {
+    // Backend product lines already embed [YYYY-MM-DD HH:MM:SS]; keep exact Python style.
+    // For raw/orch lines without stamp, synthesize Shanghai-like local stamp from entry.at.
+    const raw = String((x && x.line) || "");
+    if (!raw) return "";
+    if (/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]/.test(raw)) return raw;
+    const at = String((x && x.at) || "");
+    let stamp = "";
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(at)) {
+      // ISO → "YYYY-MM-DD HH:MM:SS" (strip Z / ms / offset)
+      stamp = at.slice(0, 19).replace("T", " ");
+    } else if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(at)) {
+      stamp = at.slice(0, 19);
+    }
+    return stamp ? "[" + stamp + "] " + raw : raw;
+  }
+
+  function profileLogsHtml(pid, opts) {
+    // HARD_GATE#768-C: card last-6 viewport; full history only in log-modal
+    opts = opts || {};
+    const full = !!opts.full;
+    const all = state.logs[pid] || [];
+    const lines = full ? all : all.slice(-6); // last-6
+    if (!lines.length) {
+      return '<div class="log-empty">暂无日志。启动保活后这里会实时滚动。</div>';
+    }
+    const rows = lines.map(function (x) {
+      const raw = formatLogDisplayLine(x);
+      const level = classifyLogLine(raw);
+      return (
+        '<div class="log-line log-line-py ' +
+        esc(level) +
+        '"><span class="log-text">' +
+        esc(raw) +
+        "</span></div>"
+      );
+    });
+    if (!full) {
+      while (rows.length < 6) {
+        rows.push(
+          '<div class="log-line log-line-pad" aria-hidden="true"><span class="log-text">&nbsp;</span></div>'
+        );
+      }
+    }
+    return rows.join("");
+  }
+
+  function ensureLogModal() {
+    // HARD_GATE#768-C: log-modal alias + CSS shell .log-full-modal / .log-full-dialog
+    // HARD_GATE#827: static #log-full-modal must still bind close/backdrop once
+    let el = $("#log-modal") || $("#log-full-modal");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "log-modal";
+      el.className = "log-modal log-full-modal modal hidden";
+      el.setAttribute("aria-hidden", "true");
+      el.setAttribute("role", "dialog");
+      el.setAttribute("aria-modal", "true");
+      el.setAttribute("aria-labelledby", "log-full-title");
+      el.innerHTML =
+        '<div class="log-full-dialog modal-card log-modal-card">' +
+        '<div class="log-full-head modal-head">' +
+        '<h3 id="log-full-title" class="log-full-title">完整日志</h3>' +
+        '<button type="button" class="btn btn-ghost modal-x" id="log-full-close" aria-label="关闭">×</button>' +
+        "</div>" +
+        '<div class="log-box log-full-body log-full-box card-log" id="log-full-body" data-log-modal-body="1"></div>' +
+        "</div>";
+      document.body.appendChild(el);
+    }
+    if (!el.dataset.closeBound) {
+      el.dataset.closeBound = "1";
+      el.addEventListener("click", function (ev) {
+        if (ev.target === el) closeLogModal();
+      });
+      const closeBtn =
+        el.querySelector("#log-full-close") ||
+        el.querySelector("[data-close-log-modal], .modal-x, .log-full-close");
+      if (closeBtn) {
+        closeBtn.addEventListener("click", function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          closeLogModal();
+        });
+      }
+    }
+    return el;
+  }
+
+  function openLogModal(pid) {
+    if (!pid) return;
+    const el = ensureLogModal();
+    const p = (state.profiles || []).find(function (x) {
+      return x && x.id === pid;
+    });
+    const d = ensureDraft(pid, p || {});
+    const name =
+      (p && (p.displayName || p.usernameMasked || p.username)) || pid;
+    const usid = (d && d.userServiceId) || (p && p.userServiceId) || "";
+    const title = el.querySelector("#log-full-title");
+    if (title) {
+      title.textContent =
+        "完整日志 · " + name + (usid ? " · 桌面 " + usid : "");
+    }
+    const body = el.querySelector("#log-full-body");
+    if (body) body.innerHTML = profileLogsHtml(pid, { full: true });
+    // HARD_GATE#810: force visible vs CSS .log-full-modal / [hidden] / .is-hidden
+    // HARD_GATE#827: scroll lock + return focus; close must reverse cleanly
+    state.logModalReturnFocus =
+      document.activeElement && document.activeElement !== document.body
+        ? document.activeElement
+        : document.querySelector('.log-panel[data-pid="' + pid + '"]') ||
+          document.querySelector('.card[data-pid="' + pid + '"] .log-panel') ||
+          null;
+    el.classList.remove("hidden", "is-hidden");
+    el.removeAttribute("hidden");
+    el.setAttribute("aria-hidden", "false");
+    el.style.display = "flex";
+    el.style.pointerEvents = "auto";
+    document.body.classList.add("log-modal-open");
+    document.body.style.overflow = "hidden";
+    state.logModalPid = pid;
+    const closeBtn = el.querySelector("#log-full-close");
+    if (closeBtn && typeof closeBtn.focus === "function") {
+      try {
+        closeBtn.focus();
+      } catch (_) {}
+    }
+  }
+
+  function closeLogModal() {
+    // HARD_GATE#827 CARD_LOG_MODAL_CLOSE_BTN: X/backdrop/Esc clean close, no residual mask
+    const el = $("#log-modal") || $("#log-full-modal");
+    if (!el) return;
+    el.classList.add("hidden", "is-hidden");
+    el.setAttribute("hidden", "");
+    el.setAttribute("aria-hidden", "true");
+    el.style.display = "none";
+    el.style.pointerEvents = "";
+    document.body.classList.remove("log-modal-open");
+    document.body.style.overflow = "";
+    state.logModalPid = null;
+    const back = state.logModalReturnFocus;
+    state.logModalReturnFocus = null;
+    if (back && typeof back.focus === "function") {
+      try {
+        back.focus();
+      } catch (_) {}
+    }
+  }
+
+  function desktopRowText(d) {
+    const id = (d && (d.userServiceId || d.id)) || "";
+    const label = (d && (d.desktopLabel || d.name || d.label)) || id || "未命名";
+    const spu = (d && (d.spuCode || d.spu_code)) || "—";
+    return label + " / " + id + " | spuCode：" + spu;
+  }
+
+  function deskRefreshCtaHtml(pid, composer, loading) {
+    /* HARD_GATE#781: centered text-link CTA (CLI Proxy style), not thick bordered btn.
+       Do NOT use class desk-refresh-cta alone under old CSS (thick secondary btn).
+       Keep data-act + desk-refresh-link; inline style guarantees text-link look without CSS ownership. */
+    const act = composer ? "composer-desktops" : "desktops";
+    const pidAttr = composer
+      ? ""
+      : ' data-pid="' + esc(pid || "") + '"';
+    const label = loading ? "刷新中…" : "点击此处刷新云桌面列表";
+    const disabled = loading ? " disabled aria-busy=\"true\"" : "";
+    const busyCls = loading ? " is-loading" : "";
+    const color = loading ? "var(--muted, #8b90a5)" : "var(--accent, #625fff)";
+    const style =
+      "display:block;width:100%;margin:6px 0 0;padding:4px 0;border:0;background:transparent;" +
+      "box-shadow:none;border-radius:0;min-height:auto;height:auto;font:inherit;font-size:13px;" +
+      "font-weight:500;letter-spacing:0;text-align:center;text-decoration:underline;" +
+      "text-underline-offset:3px;cursor:" +
+      (loading ? "wait" : "pointer") +
+      ";color:" +
+      color +
+      ";";
+    return (
+      '<div class="desk-refresh-wrap" style="width:100%;text-align:center;">' +
+      '<button type="button" class="desk-refresh-link desk-refresh-cta' +
+      busyCls +
+      '" data-act="' +
+      act +
+      '"' +
+      pidAttr +
+      ' title="刷新云桌面列表" aria-label="刷新云桌面列表" style="' +
+      style +
+      '"' +
+      disabled +
+      ">" +
+      label +
+      "</button></div>"
+    );
+  }
+
+  function desktopSegmentedHtml(pid, selected, surface) {
+    const list = state.desktops[pid] || [];
+    const surfaceAttr = surface ? ' data-surface="1"' : "";
+    const name = "desktop-" + pid + (surface ? "-surface" : "-modal");
+    if (!list.length) {
+      /* HARD_GATE#747: empty = real CTA button; keep selected id chip if any */
+      const chip = selected
+        ? '<span class="desk-selected-chip">' + esc(String(selected)) + "</span>"
+        : "";
+      return (
+        '<div class="desk-seg is-empty desk-seg-refresh" role="group" aria-label="云桌面刷新">' +
+        chip +
+        deskRefreshCtaHtml(pid, false, !!state.busy[pid]) +
+        "</div>"
+      );
+    }
+    let html =
+      '<div class="desk-seg" role="radiogroup" aria-label="云桌面">';
+    for (let i = 0; i < list.length; i++) {
+      const d = list[i] || {};
+      const id = d.userServiceId || d.id || "";
+      const label = d.desktopLabel || d.name || d.label || id;
+      const val = id + "||" + label;
+      const checked = id === selected || label === selected;
+      const text = desktopRowText(d);
+      html +=
+        '<label class="desk-seg-item' +
+        (checked ? " is-active" : "") +
+        '">' +
+        '<input type="radio" name="' +
+        esc(name) +
+        '" data-pid="' +
+        esc(pid) +
+        '" data-key="desktop"' +
+        surfaceAttr +
+        ' value="' +
+        esc(val) +
+        '"' +
+        (checked ? " checked" : "") +
+        " />" +
+        '<span class="desk-dot" aria-hidden="true"></span>' +
+        '<span class="desk-seg-text">' +
+        esc(text) +
+        "</span></label>";
+    }
+    /* HARD_GATE#747: keep refresh after selected / list loaded */
+    return html + "</div>" + deskRefreshCtaHtml(pid, false, !!state.busy[pid]);
+  }
+
+  /* compat alias — no native select options */
+  function desktopOptionsHtml(pid, selected) {
+    return desktopSegmentedHtml(pid, selected, false);
+  }
+
+  function cardHtml(p) {
+    const pid = p.id;
+    const st = statusOf(p);
+    const open = state.configPid === pid;
+    const d = ensureDraft(pid, p);
+    const busy = !!state.busy[pid];
+    const job = jobOf(p);
+    const name = p.displayName || pid;
+    const user = p.usernameMasked || "未设置账号";
+    const usid = d.userServiceId || p.userServiceId || "";
+    let deskLabel = d.desktopLabel || p.desktopLabel || "";
+    /* resolve label from cached list for card-meta only; never spu on surface */
+    if (usid && !deskLabel) {
+      const dlist = state.desktops[pid] || [];
+      for (let i = 0; i < dlist.length; i++) {
+        const x = dlist[i];
+        const xid = x.userServiceId || x.id || "";
+        if (xid === usid) {
+          deskLabel = x.desktopLabel || x.name || x.label || "";
+          break;
+        }
+      }
+    }
+    /* HARD_GATE#736: surface id-only; no long desk/spu string */
+    const deskIdText = usid || "未选";
+    const deskShort = deskLabel || usid || "未选桌面";
+    const client = p.clientProfile || d.clientProfile || "linux";
+    const protocol =
+      d.protocol || (p && p.protocol) || (job && job.protocol) || "ZTE";
+    const mode = d.mode || (p && p.mode) || (job && job.mode) || "live";
+    const errLine = String(state.cardMsg[pid] || p.lastError || "").trim();
+    const running = st === "running";
+
+    return (
+      '<article class="card status-' +
+      esc(st) +
+      (open ? " is-configuring" : "") +
+      '" data-id="' +
+      esc(pid) +
+      '">' +
+      '<header class="card-head">' +
+      '<div class="card-title">' +
+      '<span class="status-dot" aria-hidden="true"></span>' +
+      "<div>" +
+      '<p class="card-name">' +
+      esc(name) +
+      "</p>" +
+      '<p class="card-meta">' +
+      esc(user) +
+      " · " +
+      esc(protocolLabel(protocol)) +
+      " · " +
+      esc(deskShort) +
+      "</p>" +
+      "</div></div>" +
+      '<span class="badge badge-' +
+      esc(st) +
+      '">' +
+      esc(statusLabel(st)) +
+      "</span>" +
+      "</header>" +
+      '<div class="card-summary">' +
+      "<div>云桌面 id<strong title=\"" +
+      esc(deskIdText) +
+      '">' +
+      esc(deskIdText) +
+      "</strong></div>" +
+      "<div>用户协议<strong>" +
+      esc(protocolLabel(protocol)) +
+      "</strong></div>" +
+      "<div>客户端<strong>" +
+      esc(clientLabel(client)) +
+      "</strong></div>" +
+      "<div>模式<strong>" +
+      esc(modeLabel(mode)) +
+      "</strong></div>" +
+      "<div>间隔<strong>" +
+      esc(String(d.intervalMin || 5)) +
+      " 分钟</strong></div>" +
+      "</div>" +
+      '<div class="card-surface">' +
+      (errLine
+        ? '<p class="card-error">' + esc(errLine) + "</p>"
+        : "") +
+      '<div class="card-actions">' +
+      (running
+        ? '<button type="button" class="btn btn-stop" data-act="stop" ' +
+          (busy ? "disabled" : "") +
+          ">停止保活</button>"
+        : '<button type="button" class="btn btn-primary" data-act="start" ' +
+          (busy ? "disabled" : "") +
+          ">开始保活</button>") +
+      '<button type="button" class="btn btn-ghost" data-act="config" ' +
+      (busy ? "disabled" : "") +
+      (open ? ' aria-expanded="true"' : ' aria-expanded="false"') +
+      ">配置</button>" +
+      '<button type="button" class="btn btn-ghost" data-act="logs" ' +
+      (busy ? "disabled" : "") +
+      ">刷新日志</button>" +
+      "</div>" +
+      /* HARD_GATE#736: logs-only dual surface; desktop box removed */
+      /* HARD_GATE#810: dblclick whole log panel (head+box) → full modal */
+      '<div class="card-surface-dual card-surface-log-only">' +
+      '<div class="log-panel surface-log card-log-expanded" data-log="' +
+      esc(pid) +
+      '" title="双击查看完整日志">' +
+      '<div class="log-panel-head"><span>日志（常显最近 6 条，双击查看完整）</span></div>' +
+      '<div class="log-box log-viewport" data-log="' +
+      esc(pid) +
+      '">' +
+      profileLogsHtml(pid) +
+      "</div></div>" +
+      "</div>" +
+      "</div></article>"
+    );
+  }
+
+  function configFormHtml(p) {
+    const pid = p.id;
+    const d = ensureDraft(pid, p);
+    const busy = !!state.busy[pid];
+    const job = jobOf(p);
+    const user = p.usernameMasked || "未设置账号";
+    const client = p.clientProfile || d.clientProfile || "linux";
+    const protocol =
+      d.protocol || (p && p.protocol) || (job && job.protocol) || "ZTE";
+    const mode = d.mode || (p && p.mode) || (job && job.mode) || "live";
+    const errLine = String(state.cardMsg[pid] || "").trim();
+    const usid = d.userServiceId || (p && p.userServiceId) || "";
+    const selectedDesk = usid || d.desktopLabel || "";
+    const spu =
+      d.spuCode ||
+      (p && (p.spuCode || p.spu_code)) ||
+      "";
+    return (
+      (errLine
+        ? '<p class="card-error" id="config-modal-error">' + esc(errLine) + "</p>"
+        : '<p class="card-error hidden" id="config-modal-error"></p>') +
+      '<div class="card-fields config-modal-fields">' +
+      '<label class="field span-2"><span>显示名</span>' +
+      '<input type="text" data-pid="' +
+      esc(pid) +
+      '" data-key="displayName" value="' +
+      esc(d.displayName || "") +
+      '" /></label>' +
+      '<label class="field"><span>账号</span>' +
+      '<input type="text" data-pid="' +
+      esc(pid) +
+      '" data-key="username" placeholder="' +
+      esc(user) +
+      '" value="' +
+      esc(d.username || "") +
+      '" /></label>' +
+      '<label class="field"><span>密码</span>' +
+      '<input type="text" autocomplete="off" data-pid="' +
+      esc(pid) +
+      '" data-key="password" placeholder="' +
+      (p.hasPassword ? "已保存，不改请留空" : "请输入密码") +
+      '" value="' +
+      esc(d.password || "") +
+      '" /></label>' +
+      /* HARD_GATE#784 LOGIN_AFTER_PWD: 登录紧贴密码后、云桌面前 */
+      '<div class="field span-2 login-after-pwd">' +
+      '<button type="button" class="btn btn-secondary btn-login-inline" data-act="login" data-id="' +
+      esc(pid) +
+      '"' +
+      (busy ? " disabled" : "") +
+      ' title="登录并加载官方云桌面列表（不启动保活）">登录</button>' +
+      '<span class="field-hint">登录后加载云桌面列表，不会启动保活</span>' +
+      "</div>" +
+      '<div class="field span-2 desktop-field config-desktop-field">' +
+      "<span>云桌面</span>" +
+      '<div class="desk-seg-wrap">' +
+      /* HARD_GATE#747: CTA button inside segmented html (empty + after list) */
+      desktopSegmentedHtml(pid, selectedDesk, false) +
+      "</div>" +
+      "</div>" +
+      /* HARD_GATE#729: form-pair only 保活间隔 || 单次流量持续; duration field removed */
+      '<div class="form-pair span-2" role="group" aria-label="保活间隔 / 单次流量持续">' +
+      '<label class="field"><span>保活间隔（分钟）</span>' +
+      '<input type="number" min="1" max="1440" data-pid="' +
+      esc(pid) +
+      '" data-key="intervalMin" value="' +
+      esc(String(d.intervalMin || 5)) +
+      '" /></label>' +
+      '<label class="field"><span>单次流量持续（秒）</span>' +
+      '<input type="number" min="5" max="3600" data-pid="' +
+      esc(pid) +
+      '" data-key="trafficSec" value="' +
+      esc(String(d.trafficSec || 60)) +
+      '" /></label>' +
+      "</div>" +
+      '<div class="form-bottom-3 span-2" role="group" aria-label="客户端 / 模式 / 用户协议">' +
+      '<div class="field"><span>客户端类型</span>' +
+      '<div class="seg" role="group" aria-label="客户端类型">' +
+      '<button type="button" class="seg-btn' +
+      (client === "linux" ? " active" : "") +
+      '" data-pid="' +
+      esc(pid) +
+      '" data-key="clientProfile" data-val="linux">Linux</button>' +
+      '<button type="button" class="seg-btn' +
+      (client === "windows" ? " active" : "") +
+      '" data-pid="' +
+      esc(pid) +
+      '" data-key="clientProfile" data-val="windows">Windows</button>' +
+      '<button type="button" class="seg-btn' +
+      (client === "mac" ? " active" : "") +
+      '" data-pid="' +
+      esc(pid) +
+      '" data-key="clientProfile" data-val="mac">Mac</button>' +
+      "</div></div>" +
+      '<div class="field"><span>模式</span>' +
+      '<div class="seg" role="group" aria-label="保活模式">' +
+      '<button type="button" class="seg-btn' +
+      (modeApi(d.mode) === "live" ? " active" : "") +
+      '" data-pid="' +
+      esc(pid) +
+      '" data-key="mode" data-val="live">永久</button>' +
+      '<button type="button" class="seg-btn' +
+      (modeApi(d.mode) === "dry-run" ? " active" : "") +
+      '" data-pid="' +
+      esc(pid) +
+      '" data-key="mode" data-val="dry-run">单轮</button>' +
+      "</div></div>" +
+      '<div class="field"><span>用户协议</span>' +
+      '<div class="seg" role="group" aria-label="用户协议">' +
+      '<button type="button" class="seg-btn' +
+      (String(protocol).toUpperCase() === "ZTE" ? " active" : "") +
+      '" data-pid="' +
+      esc(pid) +
+      '" data-key="protocol" data-val="ZTE">ZTE</button>' +
+      '<button type="button" class="seg-btn' +
+      (String(protocol).toUpperCase() === "SCG" || String(protocol).toUpperCase() === "SANGFOR" ? " active" : "") +
+      '" data-pid="' +
+      esc(pid) +
+      '" data-key="protocol" data-val="SCG">SCG</button>' +
+      "</div></div>" +
+      "</div>" +
+      "</div>" +
+      '<div class="card-config-actions config-modal-actions">' +
+      '<button type="button" class="btn btn-primary" data-act="save-start" data-pid="' +
+      esc(pid) +
+      '" ' +
+      (busy || !usid ? "disabled" : "") +
+      (usid ? "" : ' title="请先选择云桌面"') +
+      ">保存并保活</button>" +
+      '<button type="button" class="btn btn-ghost" data-act="save" data-pid="' +
+      esc(pid) +
+      '" ' +
+      (busy ? "disabled" : "") +
+      ">保存配置</button>" +
+      '<button type="button" class="btn btn-danger" data-act="delete" data-pid="' +
+      esc(pid) +
+      '" ' +
+      (busy ? "disabled" : "") +
+      ">删除账号</button>" +
+      '<button type="button" class="btn btn-ghost" data-act="config-close">取消</button>' +
+      "</div>"
+    );
+  }
+
+  function openConfigModal(pid) {
+    const modal = $("#config-modal");
+    const body = $("#config-modal-body");
+    const title = $("#config-modal-title");
+    if (!modal || !body) return;
+    const p = state.profiles.find(function (x) {
+      return x.id === pid;
+    });
+    if (!p) return;
+    state.configPid = pid;
+    ensureDraft(pid, p);
+    const name = p.displayName || pid;
+    if (title) title.textContent = "配置 · " + name;
+    body.innerHTML = configFormHtml(p);
+    modal.classList.remove("hidden");
+    modal.setAttribute("aria-hidden", "false");
+    renderCards();
+    setTimeout(function () {
+      const first = body.querySelector('input:not([type="radio"]), select, input[type="radio"]');
+      if (first) {
+        try {
+          first.focus();
+        } catch (_) {}
+      }
+    }, 0);
+  }
+
+  function refreshConfigModal() {
+    const pid = state.configPid;
+    if (!pid) return;
+    const modal = $("#config-modal");
+    const body = $("#config-modal-body");
+    if (!modal || !body || modal.classList.contains("hidden")) return;
+    const p = state.profiles.find(function (x) {
+      return x.id === pid;
+    });
+    if (!p) return;
+    const active = document.activeElement;
+    const keepKey =
+      active && active.getAttribute ? active.getAttribute("data-key") : null;
+    const keepVal = active && "value" in active ? active.value : null;
+    body.innerHTML = configFormHtml(p);
+    if (keepKey) {
+      const el = body.querySelector('[data-key="' + keepKey + '"]');
+      if (el) {
+        if (keepVal != null && el.type !== "password") {
+          try {
+            el.value = keepVal;
+          } catch (_) {}
+        }
+        try {
+          el.focus();
+        } catch (_) {}
+      }
+    }
+  }
+
+  function closeConfigModal() {
+    const modal = $("#config-modal");
+    state.configPid = null;
+    if (modal) {
+      modal.classList.add("hidden");
+      modal.setAttribute("aria-hidden", "true");
+    }
+    const body = $("#config-modal-body");
+    if (body) body.innerHTML = "";
+    renderCards();
+  }
+
+  function renderCards() {
+    const root = $("#timeline");
+    const empty = $("#empty-state");
+    if (!root) return;
+    renderStats();
+    if (!state.profiles.length) {
+      root.innerHTML = "";
+      if (empty) empty.hidden = false;
+      return;
+    }
+    if (empty) empty.hidden = true;
+    root.innerHTML = state.profiles.map(cardHtml).join("");
+    // 卡面日志常显：折叠态也拉近 6 条
+        state.profiles.forEach(function (p) {
+      if (!p || !p.id) return;
+      if (!state.logs[p.id] || !state.logs[p.id].length) {
+        loadLogs(p.id).catch(function () {});
+      }
+    });
+    refreshConfigModal();
+  }
+
+  function setComposerMsg(text, kind) {
+    const el = $("#composer-msg");
+    if (!el) return;
+    el.textContent = text || "";
+    el.classList.remove("error", "ok");
+    if (kind) el.classList.add(kind);
+  }
+
+  function readComposer() {
+    return {
+      displayName: ($("#c-displayName") && $("#c-displayName").value.trim()) || "",
+      username: ($("#c-username") && $("#c-username").value.trim()) || "",
+      password: ($("#c-password") && $("#c-password").value) || "",
+      protocol: state.composer.protocol || "ZTE",
+      clientProfile: state.composer.clientProfile || "linux",
+      mode: modeApi(state.composer.mode || "live"),
+      intervalMin: Number(($("#c-intervalMin") && $("#c-intervalMin").value) || 5),
+      trafficSec: Number(($("#c-trafficSec") && $("#c-trafficSec").value) || 60),
+      /* HARD_GATE#729: no duration UI; permanent/single via mode only */
+      durationSec: 0,
+      userServiceId:
+        state.composer.userServiceId ||
+        ($("#c-userServiceId") && $("#c-userServiceId").value) ||
+        "",
+      desktopLabel:
+        state.composer.desktopLabel ||
+        ($("#c-desktopLabel") && $("#c-desktopLabel").value) ||
+        "",
+    };
+  }
+
+  function clearComposer() {
+    ["c-displayName", "c-username", "c-password"].forEach(function (id) {
+      const el = $("#" + id);
+      if (el) el.value = "";
+    });
+    if ($("#c-intervalMin")) $("#c-intervalMin").value = "5";
+    if ($("#c-trafficSec")) $("#c-trafficSec").value = "60";
+    if ($("#c-userServiceId")) $("#c-userServiceId").value = "";
+    if ($("#c-desktopLabel")) $("#c-desktopLabel").value = "";
+    if ($("#c-desktop")) {
+      /* HARD_GATE#747: obvious CTA button, not gray hint text */
+      $("#c-desktop").innerHTML =
+        '<div class="desk-seg is-empty desk-seg-refresh" role="group" aria-label="云桌面刷新">' +
+        deskRefreshCtaHtml("", true, !!(state.composer.profileId && state.busy[state.composer.profileId])) +
+        "</div>";
+      $("#c-desktop").classList.add("is-locked");
+      $("#c-desktop").setAttribute("aria-disabled", "true");
+    }
+    state.composer = {
+      protocol: "ZTE",
+      clientProfile: "linux",
+      mode: "live",
+      userServiceId: "",
+      desktopLabel: "",
+      profileId: "",
+    };
+    $$(".composer .seg-btn").forEach(function (btn) {
+      const p = btn.getAttribute("data-protocol");
+      const c = btn.getAttribute("data-client");
+      const m = btn.getAttribute("data-mode");
+      if (p) btn.classList.toggle("active", p === "ZTE");
+      if (c) btn.classList.toggle("active", c === "linux");
+      if (m) btn.classList.toggle("active", m === "live");
+    });
+    setComposerMsg("");
+    setComposerDesktopLock(false);
+    setComposerOfficial("未登录");
+  }
+
+
+  async function loadJobs() {
+    try {
+      const data = await api("/api/jobs");
+      const jobs = (data && data.jobs) || data || [];
+      const list = Array.isArray(jobs) ? jobs : [];
+      state.jobsById = Object.create(null);
+      state.jobsByProfile = Object.create(null);
+      for (let i = 0; i < list.length; i++) {
+        const j = list[i] || {};
+        const jid = j.id || j.jobId || j.job_id;
+        if (jid) state.jobsById[jid] = j;
+        const pid = j.profileId || j.profile_id || j.accountId || j.account_id;
+        if (pid) state.jobsByProfile[pid] = j;
+      }
+    } catch (_) {
+      /* jobs optional; card falls back to profile fields */
+    }
+  }
+
+  async function loadProfiles(forceExpandNone) {
+    try {
+      await loadJobs();
+      const data = await api("/api/profiles");
+      state.profiles = (data && data.profiles) || [];
+      for (let i = 0; i < state.profiles.length; i++) {
+        ensureDraft(state.profiles[i].id, state.profiles[i]);
+      }
+      if (forceExpandNone) {
+        /* config modal pid kept independently */
+      }
+      renderCards();
+    } catch (e) {
+      toast(humanError(e, "列表加载失败"), true);
+      pushGlobal("列表加载失败: " + humanError(e), "error");
+    }
+  }
+
+  async function loadLogs(pid, toastOk) {
+    try {
+      const data = await api(
+        "/api/profiles/" + encodeURIComponent(pid) + "/logs"
+      );
+      state.logs[pid] = (data && data.lines) || [];
+      const panel = $('[data-log="' + pid + '"]');
+      if (panel) panel.innerHTML = profileLogsHtml(pid);
+      if (state.logModalPid === pid) {
+        const body = $("#log-full-body");
+        if (body) body.innerHTML = profileLogsHtml(pid, { full: true });
+      }
+      if (toastOk) toast("日志已刷新");
+    } catch (e) {
+      pushGlobal("[" + pid + "] 日志读取失败: " + humanError(e), "error");
+    }
+  }
+
+  /* HARD_GATE#707-5 / NUDGE#761: dead token UI DOM removed; localStorage/API/?token= only */
+  async function applySavedToken(v, opts) {
+    opts = opts || {};
+    const token = (v || "").trim();
+    if (!token) {
+      toast("请先输入访问令牌");
+      return false;
+    }
+    setToken(token);
+    state.sseNeedTokenLogged = false;
+    await loadSys();
+    try {
+      await loadProfiles(true);
+    } catch (e) {
+      toast(humanError(e, "令牌已保存，但资料加载失败"), "error");
+      connectSSE();
+      return false;
+    }
+    connectSSE();
+    if (opts.toast !== false) toast("访问令牌已保存");
+    pushGlobal("访问令牌已写入本机，事件流将使用令牌重连");
+    return true;
+  }
+
+  function clearSavedToken(opts) {
+    opts = opts || {};
+    setToken("");
+    state.sseNeedTokenLogged = false;
+    if (state.es) {
+      try {
+        state.es.close();
+      } catch (_) {}
+      state.es = null;
+    }
+    loadSys().then(function () {
+      if (state.tokenRequired) {
+        pushGlobal("已清除本机令牌 · 需重新填写后才能连接事件流", "error");
+      } else {
+        connectSSE();
+      }
+    });
+    if (opts.toast !== false) toast("已清除本机令牌");
+  }
+
+  async function loadSys() {
+    try {
+      const info = await api("/api/system/info");
+      state.tokenRequired = !!(info && info.tokenRequired);
+      const el = $("#sys-info");
+      if (el) {
+        el.textContent =
+          "服务 " +
+          (info.service || "cmcc-cloud-alive") +
+          " · v" +
+          (info.version || "?") +
+          (state.tokenRequired ? " · 需令牌" : "");
+      }
+    } catch (e) {
+      // If token gate is on and info is still protected, 401 implies need-token.
+      if (e && (e.status === 401 || e.code === "AUTH_FAILED")) {
+        state.tokenRequired = true;
+      }
+      const el = $("#sys-info");
+      if (el) {
+        el.textContent = state.tokenRequired ? "服务 · 需令牌" : "";
+      }
+    }
+  }
+
+  function confirmModal(title, body, okText) {
+    return new Promise(function (resolve) {
+      const modal = $("#modal");
+      const t = $("#modal-title");
+      const b = $("#modal-body");
+      const ok = $("#modal-ok");
+      const cancel = $("#modal-cancel");
+      if (!modal || !ok || !cancel) {
+        resolve(window.confirm(body || title));
+        return;
+      }
+      t.textContent = title || "确认";
+      b.textContent = body || "";
+      ok.textContent = okText || "确定删除";
+      modal.classList.remove("hidden");
+      modal.setAttribute("aria-hidden", "false");
+      setTimeout(function () {
+        try {
+          cancel.focus();
+        } catch (_) {}
+      }, 0);
+      const done = function (v) {
+        modal.classList.add("hidden");
+        modal.setAttribute("aria-hidden", "true");
+        ok.onclick = null;
+        cancel.onclick = null;
+        resolve(v);
+      };
+      ok.onclick = function () {
+        done(true);
+      };
+      cancel.onclick = function () {
+        done(false);
+      };
+    });
+  }
+
+  async function onSave(pid) {
+    const d = ensureDraft(pid);
+    state.busy[pid] = true;
+    renderCards();
+    try {
+      if (d.username || d.password) {
+        await api("/api/profiles/" + encodeURIComponent(pid) + "/login", {
+          method: "POST",
+          body: {
+            username: d.username || undefined,
+            password: d.password || undefined,
+          },
+        });
+      }
+      if (d.userServiceId || d.desktopLabel) {
+        await api(
+          "/api/profiles/" + encodeURIComponent(pid) + "/select-desktop",
+          {
+            method: "POST",
+            body: {
+              userServiceId: d.userServiceId || undefined,
+              desktopLabel: d.desktopLabel || undefined,
+              protocol: (d.protocol || "ZTE").toUpperCase(),
+              protocolHint: (d.protocol || "").toUpperCase() || undefined,
+              spuCode: d.spuCode || undefined,
+            },
+          }
+        );
+      }
+      d.password = "";
+      state.cardMsg[pid] = "";
+      toast("配置已保存");
+      pushGlobal("[" + pid + "] 配置已保存");
+      closeConfigModal();
+      await loadProfiles();
+    } catch (e) {
+      const msg = humanError(e, "保存失败");
+      state.cardMsg[pid] = msg;
+      toast(msg, true);
+      pushGlobal("[" + pid + "] 保存失败: " + msg, "error");
+      renderCards();
+    } finally {
+      state.busy[pid] = false;
+      renderCards();
+    }
+  }
+
+  async function onStart(pid) {
+    const d = ensureDraft(pid);
+    const p = state.profiles.find(function (x) {
+      return x.id === pid;
+    });
+    if (!(d.userServiceId || d.desktopLabel || (p && (p.userServiceId || p.desktopLabel)))) {
+      const msg = "请先选择云桌面";
+      state.cardMsg[pid] = msg;
+      toast(msg, true);
+      renderCards();
+      return;
+    }
+    state.busy[pid] = true;
+    state.cardMsg[pid] = "";
+    renderCards();
+    try {
+      if (d.username || d.password) {
+        await api("/api/profiles/" + encodeURIComponent(pid) + "/login", {
+          method: "POST",
+          body: {
+            username: d.username || undefined,
+            password: d.password || undefined,
+          },
+        });
+      }
+      // 登录后尽量刷新桌面列表 / 协议提示
+      try {
+        const deskData = await api(
+          "/api/profiles/" + encodeURIComponent(pid) + "/desktops"
+        );
+        const list =
+          (deskData && (deskData.desktops || deskData.items || deskData.list)) ||
+          (Array.isArray(deskData) ? deskData : []) ||
+          [];
+        state.desktops[pid] = list;
+        if (d.userServiceId) {
+          for (let i = 0; i < list.length; i++) {
+            const x = list[i] || {};
+            const xid = x.userServiceId || x.id || "";
+            if (xid === d.userServiceId) {
+              applyOfficialFromDesktop(d, x);
+              break;
+            }
+          }
+        } else if (list.length === 1) {
+          const only = list[0] || {};
+          d.userServiceId = only.userServiceId || only.id || "";
+          d.desktopLabel =
+            only.desktopLabel || only.name || only.label || d.userServiceId;
+          applyOfficialFromDesktop(d, only);
+        }
+      } catch (_) {
+        /* 桌面刷新失败不阻断启动；AUTH 等由后续 select/jobs 暴露 */
+      }
+      if (d.userServiceId || d.desktopLabel) {
+        await api(
+          "/api/profiles/" + encodeURIComponent(pid) + "/select-desktop",
+          {
+            method: "POST",
+            body: {
+              userServiceId: d.userServiceId || undefined,
+              desktopLabel: d.desktopLabel || undefined,
+              protocol: (d.protocol || "ZTE").toUpperCase(),
+              protocolHint: (d.protocol || "").toUpperCase() || undefined,
+              spuCode: d.spuCode || undefined,
+            },
+          }
+        );
+      }
+      const mode = modeApi(d.mode);
+      const data = await api(
+        "/api/profiles/" + encodeURIComponent(pid) + "/jobs",
+        {
+          method: "POST",
+          body: {
+            protocol: (d.protocol || "ZTE").toUpperCase(),
+            mode: mode,
+            clientProfile: d.clientProfile || "linux",
+            intervalSec: Math.max(60, Number(d.intervalMin || 5) * 60),
+            trafficSec: Number(d.trafficSec || 60),
+            /* HARD_GATE#729: mode owns forever/once; duration always 0 */
+            durationSec: 0,
+          },
+        }
+      );
+      toast(mode === "live" ? "已开始保活" : "已启动单轮试跑");
+      pushGlobal(
+        "[" +
+          ((p && p.displayName) || pid) +
+          "] 开始保活 · " +
+          protocolLabel(d.protocol) +
+          " · " +
+          modeLabel(mode)
+      );
+      d.password = "";
+      /* no card expand */
+      closeConfigModal();
+      await loadProfiles();
+      await loadLogs(pid);
+      return data;
+    } catch (e) {
+      const msg = humanError(e, "启动失败");
+      state.cardMsg[pid] = msg;
+      toast(msg, true);
+      pushGlobal("[" + pid + "] 启动失败: " + msg, "error");
+      renderCards();
+    } finally {
+      state.busy[pid] = false;
+      renderCards();
+    }
+  }
+
+  async function onStop(pid) {
+    state.busy[pid] = true;
+    renderCards();
+    try {
+      await api(
+        "/api/profiles/" + encodeURIComponent(pid) + "/jobs/current",
+        { method: "DELETE" }
+      );
+      toast("已停止保活");
+      pushGlobal("[" + pid + "] 已停止保活");
+      state.cardMsg[pid] = "";
+      await loadProfiles();
+      await loadLogs(pid);
+    } catch (e) {
+      const msg = humanError(e, "停止失败");
+      state.cardMsg[pid] = msg;
+      toast(msg, true);
+      pushGlobal("[" + pid + "] 停止失败: " + msg, "error");
+      renderCards();
+    } finally {
+      state.busy[pid] = false;
+      renderCards();
+    }
+  }
+
+  async function onDelete(pid) {
+    const p = state.profiles.find(function (x) {
+      return x.id === pid;
+    });
+    const name = (p && p.displayName) || pid;
+    const ok = await confirmModal(
+      "删除账号",
+      "确定删除该账号？删除后无法恢复",
+      "确定删除"
+    );
+    if (!ok) return;
+    state.busy[pid] = true;
+    renderCards();
+    try {
+      await api("/api/profiles/" + encodeURIComponent(pid), {
+        method: "DELETE",
+      });
+      delete state.drafts[pid];
+      delete state.logs[pid];
+      delete state.cardMsg[pid];
+      delete state.desktops[pid];
+      if (state.configPid === pid) closeConfigModal();
+      toast("已删除 " + name);
+      pushGlobal("已删除账号 " + name);
+      await loadProfiles();
+    } catch (e) {
+      const msg = humanError(e, "删除失败");
+      state.cardMsg[pid] = msg;
+      toast(msg, true);
+      pushGlobal("[" + pid + "] 删除失败: " + msg, "error");
+      renderCards();
+    } finally {
+      state.busy[pid] = false;
+      renderCards();
+    }
+  }
+
+
+  function applyOfficialFromDesktop(target, desk) {
+    if (!target || !desk) return target;
+    const hint = desk.protocolHint || desk.protocol_hint || desk.protocol || "";
+    const spu = desk.spuCode || desk.spu_code || "";
+    if (hint) {
+      const hp = String(hint).toUpperCase();
+      if (hp === "ZTE" || hp === "SCG" || hp === "SANGFOR") {
+        target.protocol = hp === "SANGFOR" ? "SCG" : hp;
+        target.lastOfficialProtocol = target.protocol;
+      }
+    }
+    if (spu) target.spuCode = spu;
+    if (!target.desktopLabel) {
+      target.desktopLabel =
+        desk.desktopLabel || desk.name || desk.label || target.userServiceId || "";
+    }
+    return target;
+  }
+
+  async function onDesktops(pid) {
+    state.busy[pid] = true;
+    renderCards();
+    try {
+      const data = await api(
+        "/api/profiles/" + encodeURIComponent(pid) + "/desktops"
+      );
+      const list =
+        (data && (data.desktops || data.items || data.list)) ||
+        (Array.isArray(data) ? data : []) ||
+        [];
+      state.desktops[pid] = list;
+      const d = ensureDraft(pid);
+      if (d.userServiceId) {
+        for (let i = 0; i < list.length; i++) {
+          const x = list[i] || {};
+          const xid = x.userServiceId || x.id || "";
+          if (xid === d.userServiceId) {
+            applyOfficialFromDesktop(d, x);
+            break;
+          }
+        }
+      } else if (list.length === 1) {
+        const only = list[0] || {};
+        d.userServiceId = only.userServiceId || only.id || "";
+        d.desktopLabel =
+          only.desktopLabel || only.name || only.label || d.userServiceId;
+        applyOfficialFromDesktop(d, only);
+      }
+      // A12: success/info stays in toast+global log; cardMsg is error-only (red)
+      state.cardMsg[pid] = "";
+      const info = list.length
+        ? "已加载 " + list.length + " 个云桌面"
+        : "未返回云桌面，请确认已登录";
+      toast(info);
+      pushGlobal("[" + pid + "] " + info);
+      renderCards();
+    } catch (e) {
+      const msg = humanError(e, "刷新桌面失败");
+      state.cardMsg[pid] = msg;
+      toast(msg, true);
+      pushGlobal("[" + pid + "] 刷新桌面失败: " + msg, "error");
+      renderCards();
+    } finally {
+      state.busy[pid] = false;
+      renderCards();
+    }
+  }
+
+  
+  async function onConfigLogin(pid) {
+    // HARD_GATE#784: modal 登录 = save draft creds then refresh official desktops (no keepalive)
+    if (!pid) return;
+    state.busy[pid] = true;
+    patchCardStatus(pid);
+    // if config form open, keep form; avoid full card wipe of inputs
+    try {
+      // pull latest draft from open form fields
+      const form = $("#config-form") || document.querySelector('[data-id="' + pid + '"]');
+      if (form) {
+        const inputs = form.querySelectorAll("[data-key]");
+        for (let i = 0; i < inputs.length; i++) {
+          applyDraftFromEl(inputs[i]);
+        }
+      }
+      const d = ensureDraft(pid);
+      const body = {
+        username: d.username || undefined,
+        password: d.password || undefined,
+        clientProfile: d.clientProfile || undefined,
+        protocol: d.protocol || undefined,
+        mode: d.mode || undefined,
+        displayName: d.displayName || undefined,
+      };
+      // best-effort save so /desktops uses fresh creds
+      try {
+        await api("/api/profiles/" + encodeURIComponent(pid), {
+          method: "PUT",
+          body: JSON.stringify(body),
+        });
+      } catch (_) {
+        /* create path may differ; still try desktops */
+      }
+      await onDesktops(pid);
+    } catch (e) {
+      const msg = humanError(e, "登录失败");
+      state.cardMsg[pid] = msg;
+      toast(msg, true);
+      pushGlobal("[" + pid + "] " + msg, "error");
+    } finally {
+      state.busy[pid] = false;
+      // refresh modal desktop list without nuking logs if possible
+      if (state.configPid === pid) {
+        try {
+          refreshConfigModal();
+        } catch (_) {
+          renderCards();
+        }
+      } else {
+        patchCardStatus(pid);
+      }
+    }
+  }
+
+  function setComposerOfficial(text) {
+    /* HARD_GATE#707-3/4: drop 协议提示 / 官方协议 independent UI; keep data-only no-op */
+    const el = $("#c-official-protocol");
+    if (el) {
+      el.textContent = text || "未登录";
+      const wrap = el.closest(".official-protocol-field") || el.parentElement;
+      if (wrap && wrap.style) wrap.style.display = "none";
+      el.style.display = "none";
+    }
+  }
+
+  function setComposerDesktopLock(unlocked) {
+    const box = $("#c-desktop");
+    if (box) {
+      box.classList.toggle("is-locked", !unlocked);
+      box.setAttribute("aria-disabled", unlocked ? "false" : "true");
+      const radios = box.querySelectorAll('input[type="radio"]');
+      for (let i = 0; i < radios.length; i++) {
+        radios[i].disabled = !unlocked;
+      }
+    }
+    /* HARD_GATE#707-4 / NUDGE#761: external load control removed; desk-refresh-cta is sole CTA */
+    const note = $("#c-desktop-note");
+    if (note) {
+      note.textContent = unlocked
+        ? "官方 list_clouds 已加载；请选择云桌面"
+        : "登录成功后展示官方 list_clouds（名称/状态/spuCode）";
+    }
+  }
+
+  function desktopOptionLabel(d) {
+    /* HARD_GATE#781: 名称 / id | spuCode：xxx */
+    return desktopRowText(d || {});
+  }
+
+  function fillComposerDesktopSelect(list, selectedId) {
+    const box = $("#c-desktop");
+    if (!box) return;
+    list = Array.isArray(list) ? list : [];
+    if (!list.length) {
+      /* HARD_GATE#747: empty composer = obvious refresh CTA button */
+      box.innerHTML =
+        '<div class="desk-seg is-empty desk-seg-refresh" role="group" aria-label="云桌面刷新">' +
+        deskRefreshCtaHtml("", true, !!(state.composer.profileId && state.busy[state.composer.profileId])) +
+        "</div>";
+      setComposerDesktopLock(true);
+      return;
+    }
+    let html = '<div class="desk-seg" role="radiogroup" aria-label="云桌面列表">';
+    let matched = false;
+    for (let i = 0; i < list.length; i++) {
+      const d = list[i] || {};
+      const id = String(d.userServiceId || d.id || "");
+      const label = d.desktopLabel || d.name || d.label || id;
+      const active =
+        selectedId && String(selectedId) === id
+          ? true
+          : !selectedId && list.length === 1;
+      if (active) matched = true;
+      const rid = "c-desk-" + i + "-" + id.replace(/[^a-zA-Z0-9_-]/g, "_");
+      html +=
+        '<label class="desk-seg-item' +
+        (active ? " is-active" : "") +
+        '" for="' +
+        rid +
+        '">' +
+        '<input type="radio" name="c-desktop" id="' +
+        rid +
+        '" value="' +
+        esc(id) +
+        '" data-label="' +
+        esc(label) +
+        '"' +
+        (active ? " checked" : "") +
+        " />" +
+        '<span class="desk-dot" aria-hidden="true"></span>' +
+        '<span class="desk-seg-text">' +
+        esc(desktopOptionLabel(d)) +
+        "</span></label>";
+    }
+    /* HARD_GATE#747: keep refresh CTA after selected / list loaded */
+    html += "</div>" + deskRefreshCtaHtml("", true, !!(state.composer.profileId && state.busy[state.composer.profileId]));
+    box.innerHTML = html;
+    if (matched) {
+      const act = box.querySelector(".desk-seg-item.is-active input");
+      if (act) {
+        state.composer.userServiceId = act.value || "";
+        state.composer.desktopLabel =
+          act.getAttribute("data-label") || act.value || "";
+        if ($("#c-userServiceId")) $("#c-userServiceId").value = act.value || "";
+        if ($("#c-desktopLabel"))
+          $("#c-desktopLabel").value =
+            act.getAttribute("data-label") || act.value || "";
+      }
+    }
+    setComposerDesktopLock(true);
+  }
+
+  function applyOfficialFromDesktop(target, d) {
+    if (!target || !d) return;
+    const hint = (
+      d.protocolHint ||
+      d.protocol_hint ||
+      d.protocol ||
+      ""
+    )
+      .toString()
+      .toUpperCase();
+    const spu = d.spuCode || d.spu_code || "";
+    if (hint) {
+      target.protocol = hint;
+      target.protocolHint = hint;
+      target.lastOfficialProtocol = hint;
+    }
+    if (spu) target.spuCode = spu;
+    if (hint || spu) {
+      setComposerOfficial(
+        (hint || "未知") + (spu ? " · spu " + spu : "")
+      );
+    }
+  }
+
+  function ensureComposerLoginBtn() {
+    // HARD_GATE#768-D: inject 登录 if HTML sole has not added it yet
+    if ($("#c-login")) return;
+    const actions = $(".composer-actions");
+    if (!actions) return;
+    const submit = $("#c-submit");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn btn-secondary";
+    btn.id = "c-login";
+    btn.textContent = "登录";
+    btn.title = "登录并加载官方云桌面列表（不启动保活）";
+    if (submit && submit.parentNode === actions) {
+      actions.insertBefore(btn, submit);
+    } else {
+      actions.appendChild(btn);
+    }
+  }
+
+  async function composerLoginOnly(ev) {
+    if (ev) ev.preventDefault();
+    const c = readComposer();
+    if (!c.username) {
+      setComposerMsg("请填写账号", "error");
+      return;
+    }
+    if (!c.password) {
+      setComposerMsg("请填写密码", "error");
+      return;
+    }
+    const loginBtn = $("#c-login");
+    const submitBtn = $("#c-submit");
+    if (loginBtn) loginBtn.disabled = true;
+    if (submitBtn) submitBtn.disabled = true;
+    setComposerMsg("正在登录…");
+    try {
+      let pid = state.composer.profileId || "";
+      if (!pid) {
+        const created = await api("/api/profiles", {
+          method: "POST",
+          body: {
+            displayName: c.displayName || undefined,
+            username: c.username,
+            password: c.password,
+            clientProfile: c.clientProfile || "linux",
+            protocol: (c.protocol || "ZTE").toUpperCase(),
+          },
+        });
+        const p = created && created.profile;
+        if (!p || !p.id) throw new Error("创建账号失败");
+        pid = p.id;
+        state.composer.profileId = pid;
+        ensureDraft(pid, p);
+      } else {
+        ensureDraft(pid);
+      }
+      state.drafts[pid].username = c.username;
+      state.drafts[pid].password = c.password;
+      state.drafts[pid].protocol = (c.protocol || "ZTE").toUpperCase();
+      state.drafts[pid].lastOfficialProtocol = state.drafts[pid].protocol;
+      state.drafts[pid].clientProfile = c.clientProfile;
+      state.drafts[pid].mode = c.mode;
+      state.drafts[pid].intervalMin = c.intervalMin;
+      state.drafts[pid].trafficSec = c.trafficSec;
+      state.drafts[pid].durationSec = 0;
+
+      await api("/api/profiles/" + encodeURIComponent(pid) + "/login", {
+        method: "POST",
+        body: { username: c.username, password: c.password },
+      });
+      setComposerMsg("登录成功，正在加载官方云桌面列表…", "ok");
+      setComposerDesktopLock(true);
+      pushGlobal(
+        "[" + (c.displayName || c.username) + "] 登录成功，加载云桌面列表"
+      );
+
+      let list = [];
+      try {
+        const deskData = await api(
+          "/api/profiles/" + encodeURIComponent(pid) + "/desktops"
+        );
+        list =
+          (deskData && (deskData.desktops || deskData.items || deskData.list)) ||
+          (Array.isArray(deskData) ? deskData : []) ||
+          [];
+        state.desktops[pid] = list;
+        fillComposerDesktopSelect(list, c.userServiceId || "");
+        if (!c.userServiceId && list.length === 1) {
+          const only = list[0] || {};
+          c.userServiceId = only.userServiceId || only.id || "";
+          c.desktopLabel =
+            only.desktopLabel || only.name || only.label || c.userServiceId;
+          applyOfficialFromDesktop(c, only);
+          applyOfficialFromDesktop(state.drafts[pid], only);
+          fillComposerDesktopSelect(list, c.userServiceId);
+        } else if (c.userServiceId) {
+          const hit = list.find(function (d) {
+            const id = d.userServiceId || d.id || "";
+            return id === c.userServiceId;
+          });
+          if (hit) {
+            applyOfficialFromDesktop(c, hit);
+            applyOfficialFromDesktop(state.drafts[pid], hit);
+          }
+        }
+        if (list.length) {
+          setComposerMsg(
+            "登录成功 · 已加载 " + list.length + " 台云桌面，请选择后点「保存并保活」",
+            "ok"
+          );
+        } else {
+          setComposerMsg("登录成功，但官方云桌面列表为空", "error");
+        }
+      } catch (de) {
+        const dmsg = humanError(de, "云桌面列表加载失败");
+        pushGlobal(
+          "[" + (c.displayName || c.username) + "] 刷新桌面: " + dmsg,
+          "error"
+        );
+        setComposerMsg("登录成功，但桌面列表失败: " + dmsg, "error");
+      }
+      await loadProfiles();
+    } catch (e) {
+      const msg = humanError(e, "登录失败");
+      setComposerMsg(msg, "error");
+      toast(msg, true);
+      pushGlobal("Composer 登录失败: " + msg, "error");
+      await loadProfiles();
+    } finally {
+      if (loginBtn) loginBtn.disabled = false;
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  }
+
+  async function composerSaveAndStart(ev) {
+    if (ev) ev.preventDefault();
+    const c = readComposer();
+    if (!c.username) {
+      setComposerMsg("请填写账号", "error");
+      return;
+    }
+    if (!c.password) {
+      setComposerMsg("请填写密码", "error");
+      return;
+    }
+    const btn = $("#c-submit");
+    const loginBtn = $("#c-login");
+    if (btn) btn.disabled = true;
+    if (loginBtn) loginBtn.disabled = true;
+    setComposerMsg("正在保存并启动保活…");
+    try {
+      let pid = state.composer.profileId || "";
+      if (!pid) {
+        // Not yet logged via 登录: create profile first (still require desktop)
+        const created = await api("/api/profiles", {
+          method: "POST",
+          body: {
+            displayName: c.displayName || undefined,
+            username: c.username,
+            password: c.password,
+            clientProfile: c.clientProfile || "linux",
+            protocol: (c.protocol || "ZTE").toUpperCase(),
+          },
+        });
+        const p = created && created.profile;
+        if (!p || !p.id) throw new Error("创建账号失败");
+        pid = p.id;
+        state.composer.profileId = pid;
+        ensureDraft(pid, p);
+        await api("/api/profiles/" + encodeURIComponent(pid) + "/login", {
+          method: "POST",
+          body: { username: c.username, password: c.password },
+        });
+        setComposerDesktopLock(true);
+        try {
+          const deskData = await api(
+            "/api/profiles/" + encodeURIComponent(pid) + "/desktops"
+          );
+          const list =
+            (deskData &&
+              (deskData.desktops || deskData.items || deskData.list)) ||
+            (Array.isArray(deskData) ? deskData : []) ||
+            [];
+          state.desktops[pid] = list;
+          fillComposerDesktopSelect(list, c.userServiceId || "");
+          if (!c.userServiceId && list.length === 1) {
+            const only = list[0] || {};
+            c.userServiceId = only.userServiceId || only.id || "";
+            c.desktopLabel =
+              only.desktopLabel || only.name || only.label || c.userServiceId;
+            applyOfficialFromDesktop(c, only);
+            applyOfficialFromDesktop(state.drafts[pid], only);
+            fillComposerDesktopSelect(list, c.userServiceId);
+          }
+        } catch (_) {}
+      }
+      ensureDraft(pid);
+      state.drafts[pid].username = c.username;
+      state.drafts[pid].password = c.password;
+      state.drafts[pid].protocol = (c.protocol || "ZTE").toUpperCase();
+      state.drafts[pid].lastOfficialProtocol = state.drafts[pid].protocol;
+      state.drafts[pid].clientProfile = c.clientProfile;
+      state.drafts[pid].mode = c.mode;
+      state.drafts[pid].intervalMin = c.intervalMin;
+      state.drafts[pid].trafficSec = c.trafficSec;
+      state.drafts[pid].durationSec = 0;
+
+      // re-read desktop selection from DOM after possible fill
+      const c2 = readComposer();
+      c.userServiceId = c2.userServiceId || c.userServiceId;
+      c.desktopLabel = c2.desktopLabel || c.desktopLabel;
+      c.protocol = c2.protocol || c.protocol;
+
+      const list = state.desktops[pid] || [];
+      if (!c.userServiceId) {
+        if (list.length > 1) {
+          setComposerMsg("请选择云桌面后再点「保存并保活」", "error");
+          toast("请先选择云桌面", true);
+          await loadProfiles();
+          return;
+        }
+        if (!list.length) {
+          setComposerMsg(
+            "请先点「登录」加载官方云桌面列表，再选择桌面后保存并保活",
+            "error"
+          );
+          toast("请先登录并选择云桌面", true);
+          await loadProfiles();
+          return;
+        }
+        if (list.length === 1) {
+          const only = list[0] || {};
+          c.userServiceId = only.userServiceId || only.id || "";
+          c.desktopLabel =
+            only.desktopLabel || only.name || only.label || c.userServiceId;
+          applyOfficialFromDesktop(c, only);
+          applyOfficialFromDesktop(state.drafts[pid], only);
+        }
+      }
+
+      if (c.userServiceId || c.desktopLabel) {
+        await api(
+          "/api/profiles/" + encodeURIComponent(pid) + "/select-desktop",
+          {
+            method: "POST",
+            body: {
+              userServiceId: c.userServiceId || undefined,
+              desktopLabel: c.desktopLabel || undefined,
+              protocol: (
+                c.protocol ||
+                state.drafts[pid].protocol ||
+                "ZTE"
+              ).toUpperCase(),
+              protocolHint:
+                (c.protocol || state.drafts[pid].protocol || "").toUpperCase() ||
+                undefined,
+              spuCode: state.drafts[pid].spuCode || undefined,
+            },
+          }
+        );
+        state.drafts[pid].userServiceId = c.userServiceId || "";
+        state.drafts[pid].desktopLabel = c.desktopLabel || "";
+      }
+
+      setComposerMsg("正在启动保活…", "ok");
+      const mode = modeApi(c.mode);
+      await api("/api/profiles/" + encodeURIComponent(pid) + "/jobs", {
+        method: "POST",
+        body: {
+          protocol: (
+            c.protocol ||
+            state.drafts[pid].protocol ||
+            "ZTE"
+          ).toUpperCase(),
+          mode: mode,
+          clientProfile: c.clientProfile || "linux",
+          intervalSec: Math.max(60, Number(c.intervalMin || 5) * 60),
+          trafficSec: Number(c.trafficSec || 60),
+          durationSec: 0,
+        },
+      });
+      toast("保存并保活成功");
+      setComposerMsg("保存并保活成功", "ok");
+      pushGlobal(
+        "[" +
+          (c.displayName || c.username) +
+          "] 保存并保活 · " +
+          protocolLabel(c.protocol || state.drafts[pid].protocol) +
+          " · " +
+          modeLabel(mode)
+      );
+      clearComposer();
+      await loadProfiles();
+      await loadLogs(pid);
+    } catch (e) {
+      const msg = humanError(e, "保存并保活失败");
+      setComposerMsg(msg, "error");
+      toast(msg, true);
+      pushGlobal("Composer 失败: " + msg, "error");
+      await loadProfiles();
+    } finally {
+      if (btn) btn.disabled = false;
+      if (loginBtn) loginBtn.disabled = false;
+    }
+  }
+
+  // legacy alias (submit handler name used in older wires)
+  async function composerLoginAndStart(ev) {
+    return composerSaveAndStart(ev);
+  }
+
+
+  function applyDraftFromEl(el) {
+    const pid = el.getAttribute("data-pid");
+    const key = el.getAttribute("data-key");
+    if (!pid || !key) return;
+    const d = ensureDraft(pid);
+    if (key === "desktop") {
+      const parts = String(el.value || "").split("||");
+      d.userServiceId = parts[0] || "";
+      d.desktopLabel = parts[1] || parts[0] || "";
+      const list = state.desktops[pid] || [];
+      let matched = null;
+      for (let i = 0; i < list.length; i++) {
+        const x = list[i];
+        const xid = x.userServiceId || x.id || "";
+        if (xid === d.userServiceId) {
+          matched = x;
+          break;
+        }
+      }
+      if (matched) {
+        applyOfficialFromDesktop(d, matched);
+      }
+      const root = el.closest(".desk-seg");
+      if (root) {
+        const items = root.querySelectorAll(".desk-seg-item");
+        for (let i = 0; i < items.length; i++) {
+          items[i].classList.toggle(
+            "is-active",
+            items[i].contains(el) || (items[i].querySelector("input") || {}).checked
+          );
+        }
+      }
+      if (el.getAttribute("data-surface") === "1") {
+        renderCards();
+      } else if (state.configPid === pid) {
+        refreshConfigModal();
+      }
+      return;
+    }
+    if (key === "intervalMin" || key === "trafficSec") {
+      const raw = el.getAttribute("data-val");
+      d[key] = Number(raw != null ? raw : el.value || 0);
+    } else if (key === "durationSec") {
+      /* HARD_GATE#729: ignore duration UI if residual HTML still present */
+      d.durationSec = 0;
+    } else {
+      const raw = el.getAttribute("data-val");
+      const val = raw != null ? raw : el.value;
+      d[key] = val;
+      if (key === "protocol" && val) {
+        d.lastOfficialProtocol = val;
+      }
+    }
+    // seg-btn active state in config modal / cards
+    if (el.classList && el.classList.contains("seg-btn")) {
+      const group = el.closest(".seg");
+      if (group) {
+        const btns = group.querySelectorAll(".seg-btn");
+        for (let i = 0; i < btns.length; i++) {
+          btns[i].classList.toggle("active", btns[i] === el);
+        }
+      }
+    }
+  }
+
+  function bindCardEvents() {
+    const root = $("#timeline");
+    if (!root || root._bound) return;
+    root._bound = true;
+
+    root.addEventListener("click", function (ev) {
+      const segBtn = ev.target.closest(".seg-btn[data-key]");
+      if (segBtn) {
+        applyDraftFromEl(segBtn);
+        return;
+      }
+      const actEl = ev.target.closest("[data-act]");
+      const card = ev.target.closest(".card");
+      if (!card) return;
+      const pid = card.getAttribute("data-id");
+      if (!pid) return;
+      const act = actEl ? actEl.getAttribute("data-act") : "";
+      // 配置入口：居中 Modal（OPS#337）；卡面保持紧凑不展开
+      if (act === "config" || act === "config-close") {
+        ev.preventDefault();
+        if (act === "config-close") {
+          closeConfigModal();
+        } else if (state.configPid === pid) {
+          closeConfigModal();
+        } else {
+          openConfigModal(pid);
+          loadLogs(pid).catch(function () {});
+        }
+        return;
+      }
+      if (!act) return;
+      ev.preventDefault();
+      if (act === "start") onStart(pid);
+      else if (act === "stop") onStop(pid);
+      else if (act === "save") onSave(pid);
+      else if (act === "delete") onDelete(pid);
+      else if (act === "desktops") onDesktops(pid);
+      else if (act === "login") onConfigLogin(pid);
+      else if (act === "logs") { openLogModal(pid); loadLogs(pid, true); }
+    });
+
+    root.addEventListener("input", function (ev) {
+      applyDraftFromEl(ev.target);
+    });
+
+    root.addEventListener("change", function (ev) {
+      applyDraftFromEl(ev.target);
+    });
+
+    // HARD_GATE#768-C / HARD_GATE#810: double-click card log panel → full history modal
+    root.addEventListener("dblclick", function (ev) {
+      const t = ev.target;
+      if (!t || !t.closest) return;
+      // hit head / empty / line / box / whole panel (not only .log-box)
+      const hit = t.closest(
+        ".log-panel, .log-panel-head, .log-box, .log-viewport, .log-line, .log-empty, [data-log]"
+      );
+      if (!hit) return;
+      const card = hit.closest(".card");
+      const holder =
+        (hit.getAttribute && hit.getAttribute("data-log") && hit) ||
+        hit.closest("[data-log]") ||
+        card;
+      const pid =
+        (holder && holder.getAttribute && holder.getAttribute("data-log")) ||
+        (holder && holder.getAttribute && holder.getAttribute("data-id")) ||
+        (card && card.getAttribute("data-id")) ||
+        "";
+      if (!pid) return;
+      ev.preventDefault();
+      if (ev.stopPropagation) ev.stopPropagation();
+      openLogModal(pid);
+      loadLogs(pid).catch(function () {});
+    });
+
+    // Modal is outside #timeline — bind separately (OPS#337)
+    const modal = $("#config-modal");
+    if (modal && !modal._bound) {
+      modal._bound = true;
+      modal.addEventListener("click", function (ev) {
+        if (ev.target === modal) {
+          closeConfigModal();
+          return;
+        }
+        const segBtn = ev.target.closest(".seg-btn[data-key]");
+        if (segBtn) {
+          applyDraftFromEl(segBtn);
+          return;
+        }
+        const actEl = ev.target.closest("[data-act]");
+        if (!actEl) return;
+        const act = actEl.getAttribute("data-act");
+        const pid = actEl.getAttribute("data-pid") || state.configPid || "";
+        if (act === "config-close") {
+          ev.preventDefault();
+          closeConfigModal();
+          return;
+        }
+        if (act === "save" && pid) {
+          ev.preventDefault();
+          onSave(pid);
+          return;
+        }
+        if (act === "save-start" && pid) {
+          ev.preventDefault();
+          onStart(pid);
+          return;
+        }
+        if (act === "desktops" && pid) {
+          ev.preventDefault();
+          onDesktops(pid);
+          return;
+        }
+        // HARD_GATE#665 D: delete account from config modal (modal is outside #timeline)
+        if (act === "delete" && pid) {
+          ev.preventDefault();
+          onDelete(pid);
+          return;
+        }
+      });
+      modal.addEventListener("input", function (ev) {
+        applyDraftFromEl(ev.target);
+      });
+      modal.addEventListener("change", function (ev) {
+        applyDraftFromEl(ev.target);
+      });
+    }
+  }
+
+
+  function applyJobEvent(data) {
+    if (!data || typeof data !== "object") return;
+    const jid = data.jobId || data.job_id || data.id || null;
+    const pid = data.profileId || data.profile_id || null;
+    if (!jid && !pid) {
+      if (data.detail && data.detail !== "global-sse" && data.detail !== "snapshot") {
+        pushGlobal(String(data.detail), data.status === "error" ? "error" : "info");
+      }
+      return;
+    }
+    const prev =
+      (jid && state.jobsById[jid]) ||
+      (pid && state.jobsByProfile[pid]) ||
+      null;
+    const merged = Object.assign({}, prev || {}, data);
+    if (jid) {
+      merged.id = merged.id || jid;
+      merged.jobId = merged.jobId || jid;
+      state.jobsById[jid] = merged;
+    }
+    if (pid) {
+      merged.profileId = merged.profileId || pid;
+      state.jobsByProfile[pid] = merged;
+    }
+    const status = merged.status || data.status || "";
+    const label = pid || jid || "?";
+    // HARD_GATE#768-B: job status meta may hit global; keepalive round/detail stays card-only via pushCard
+    const detail = data.detail ? String(data.detail) : "";
+    const looksKeepalive =
+      /保活|keepalive|SCG|第\s*\d+\s*轮|round/i.test(detail) ||
+      /保活|keepalive|SCG|第\s*\d+\s*轮|round/i.test(status);
+    if (looksKeepalive && pid) {
+      if (detail) pushCard(pid, detail, data.at || new Date().toISOString());
+    } else if (status && (!prev || prev.status !== status)) {
+      pushGlobal(
+        "[" + label + "] job " + status + (detail && !looksKeepalive ? " — " + detail : ""),
+        status === "error" ? "error" : "info"
+      );
+    } else if (detail && detail !== "snapshot" && !looksKeepalive) {
+      pushGlobal("[" + label + "] " + detail, status === "error" ? "error" : "info");
+    }
+    try {
+      // HARD_GATE#784: status-only patch; do not rebuild log panels
+      if (pid) patchCardStatus(pid);
+      else if (jid) {
+        const p = state.profiles.find(function (x) {
+          const j = jobOf(x);
+          return j && String(j.id || j.jobId || "") === String(jid);
+        });
+        if (p) patchCardStatus(p.id);
+      }
+    } catch (_) {}
+  }
+
+  function applyJobLogEvent(data) {
+    if (!data || typeof data !== "object") return;
+    const line = data.line || data.message || "";
+    if (!line) return;
+    const pid = data.profileId || data.profile_id || "";
+    // HARD_GATE#768-B: keepalive/job logs stay on card only via pushCard; never global WebUI log
+    if (pid) pushCard(pid, line, data.at || new Date().toISOString());
+  }
+
+  function connectSSE() {
+    if (typeof EventSource === "undefined") return;
+    try {
+      if (state.es) {
+        try {
+          state.es.close();
+        } catch (_) {}
+        state.es = null;
+      }
+      // EventSource cannot set Authorization headers; BE accepts ?token= (and Bearer on fetch).
+      const token = getToken();
+      if (state.tokenRequired && !token) {
+        if (!state.sseNeedTokenLogged) {
+          pushGlobal(
+            "需要访问令牌才能连接事件流 · 请在顶部填写并保存，或使用 ?token=…",
+            "error"
+          );
+          state.sseNeedTokenLogged = true;
+        }
+        return;
+      }
+      state.sseNeedTokenLogged = false;
+      let url = "/api/events";
+      if (token) {
+        url +=
+          (url.indexOf("?") >= 0 ? "&" : "?") +
+          "token=" +
+          encodeURIComponent(token);
+      }
+      const es = new EventSource(url);
+      state.es = es;
+      // BE emits named events (event: job_status / job_log); onmessage only gets unnamed.
+      es.addEventListener("job_status", function (ev) {
+        try {
+          applyJobEvent(JSON.parse(ev.data));
+        } catch (_) {}
+      });
+      es.addEventListener("job_log", function (ev) {
+        try {
+          applyJobLogEvent(JSON.parse(ev.data));
+        } catch (_) {}
+      });
+      es.onmessage = function (ev) {
+        try {
+          const data = JSON.parse(ev.data);
+          if (data && data.line) {
+            applyJobLogEvent(data);
+          } else if (data && (data.status || data.jobId || data.profileId)) {
+            applyJobEvent(data);
+          } else if (data && data.detail) {
+            pushGlobal(String(data.detail), data.level || "info");
+          }
+        } catch (_) {}
+      };
+      es.onerror = function () {
+        /* quiet reconnect by browser */
+      };
+    } catch (_) {}
+  }
+
+  function startPolling() {
+    setInterval(async function () {
+      try {
+        await loadJobs();
+        const data = await api("/api/profiles");
+        const next = (data && data.profiles) || [];
+        const prevMap = Object.create(null);
+        for (let i = 0; i < state.profiles.length; i++) {
+          prevMap[state.profiles[i].id] = statusOf(state.profiles[i]);
+        }
+        // HARD_GATE#784: only full-render when membership/status set changes
+        let needFull = next.length !== state.profiles.length;
+        if (!needFull) {
+          for (let i = 0; i < next.length; i++) {
+            const id = next[i].id;
+            if (!prevMap[id]) {
+              needFull = true;
+              break;
+            }
+            if (prevMap[id] !== statusOf(next[i])) {
+              // status change handled below via patch; still need profile data swap
+            }
+          }
+        }
+        const idSetPrev = state.profiles
+          .map(function (x) {
+            return x.id;
+          })
+          .join("\0");
+        const idSetNext = next
+          .map(function (x) {
+            return x.id;
+          })
+          .join("\0");
+        if (idSetPrev !== idSetNext) needFull = true;
+        state.profiles = next;
+        const active = document.activeElement;
+        const keepPid =
+          active && active.getAttribute ? active.getAttribute("data-pid") : null;
+        const keepKey =
+          active && active.getAttribute ? active.getAttribute("data-key") : null;
+        const selStart = active && active.selectionStart;
+        const selEnd = active && active.selectionEnd;
+        if (needFull || state.configPid) {
+          renderCards();
+        } else {
+          for (let i = 0; i < next.length; i++) {
+            patchCardStatus(next[i].id);
+          }
+        }
+        if (keepPid && keepKey) {
+          const el = $(
+            'input[data-pid="' +
+              keepPid +
+              '"][data-key="' +
+              keepKey +
+              '"], select[data-pid="' +
+              keepPid +
+              '"][data-key="' +
+              keepKey +
+              '"]'
+          );
+          if (el) {
+            el.focus();
+            if (typeof selStart === "number" && el.setSelectionRange) {
+              try {
+                el.setSelectionRange(selStart, selEnd);
+              } catch (_) {}
+            }
+          }
+        }
+        next.forEach(function (p) {
+          if (!p || !p.id) return;
+          const pid = p.id;
+          const prev = prevMap[pid];
+          const now = statusOf(p);
+          if (prev && now && prev !== now) {
+            pushGlobal(
+              "[" +
+                (p.displayName || pid) +
+                "] 状态 " +
+                statusLabel(prev) +
+                " → " +
+                statusLabel(now)
+            );
+          }
+        });
+        if (state.configPid) {
+          const cp = next.find(function (x) {
+            return x.id === state.configPid;
+          });
+          if (cp && statusOf(cp) === "running") {
+            loadLogs(state.configPid).catch(function () {});
+          }
+        }
+      } catch (_) {}
+    }, 4000);
+  }
+
+  function wireChrome() {
+    $("#btn-refresh") &&
+      $("#btn-refresh").addEventListener("click", function () {
+        loadProfiles(false);
+      });
+    $("#btn-clear-log") &&
+      $("#btn-clear-log").addEventListener("click", function () {
+        state.globalLog = [];
+        renderGlobalLog();
+      });
+    $("#c-clear") &&
+      $("#c-clear").addEventListener("click", function () {
+        clearComposer();
+      });
+    ensureComposerLoginBtn();
+    $("#c-login") &&
+      $("#c-login").addEventListener("click", function (ev) {
+        composerLoginOnly(ev);
+      });
+    $("#composer-form") &&
+      $("#composer-form").addEventListener("submit", composerSaveAndStart);
+
+    $$(".composer .seg-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        const protocol = btn.getAttribute("data-protocol");
+        const client = btn.getAttribute("data-client");
+        const mode = btn.getAttribute("data-mode");
+        if (protocol) {
+          state.composer.protocol = protocol;
+          $$('.composer .seg-btn[data-protocol]').forEach(function (b) {
+            b.classList.toggle(
+              "active",
+              b.getAttribute("data-protocol") === protocol
+            );
+          });
+        }
+        if (client) {
+          state.composer.clientProfile = client;
+          $$('.composer .seg-btn[data-client]').forEach(function (b) {
+            b.classList.toggle(
+              "active",
+              b.getAttribute("data-client") === client
+            );
+          });
+        }
+        if (mode) {
+          state.composer.mode = mode;
+          $$('.composer .seg-btn[data-mode]').forEach(function (b) {
+            b.classList.toggle("active", b.getAttribute("data-mode") === mode);
+          });
+        }
+      });
+    });
+
+    $("#c-desktop") &&
+      $("#c-desktop").addEventListener("click", function (ev) {
+        /* HARD_GATE#707-2: empty composer desk area is the refresh control */
+        const hit = ev.target && ev.target.closest
+          ? ev.target.closest('[data-act="composer-desktops"]')
+          : null;
+        if (!hit) return;
+        ev.preventDefault();
+        const pid = state.composer.profileId;
+        if (!pid) {
+          setComposerMsg("请先登录以加载官方云桌面列表", "error");
+          return;
+        }
+        (async function () {
+          try {
+            state.busy[pid] = true;
+            setComposerMsg("正在刷新官方云桌面列表…");
+            if (hit) {
+              hit.disabled = true;
+              hit.classList.add("is-loading");
+              hit.textContent = "刷新中…";
+            }
+            const deskData = await api(
+              "/api/profiles/" + encodeURIComponent(pid) + "/desktops"
+            );
+            const list =
+              (deskData && (deskData.desktops || deskData.items || deskData.list)) ||
+              (Array.isArray(deskData) ? deskData : []) ||
+              [];
+            state.desktops[pid] = list;
+            fillComposerDesktopSelect(
+              list,
+              state.composer.userServiceId || ""
+            );
+            setComposerMsg(
+              list.length
+                ? "已刷新官方云桌面 " + list.length + " 台"
+                : "官方列表为空",
+              list.length ? "ok" : "warn"
+            );
+          } catch (err) {
+            setComposerMsg(
+              (err && err.message) || "刷新云桌面失败",
+              "error"
+            );
+          } finally {
+            state.busy[pid] = false;
+            // rebuild CTA if list still empty / restore label
+            fillComposerDesktopSelect(
+              state.desktops[pid] || [],
+              state.composer.userServiceId || ""
+            );
+          }
+        })();
+      });
+
+    $("#c-desktop") &&
+      $("#c-desktop").addEventListener("change", function (ev) {
+        const t = ev.target;
+        if (!t || t.name !== "c-desktop") return;
+        const id = t.value || "";
+        const label = t.getAttribute("data-label") || id;
+        state.composer.userServiceId = id;
+        state.composer.desktopLabel = label;
+        if ($("#c-userServiceId")) $("#c-userServiceId").value = id;
+        if ($("#c-desktopLabel")) $("#c-desktopLabel").value = label;
+        $$("#c-desktop .desk-seg-item").forEach(function (lab) {
+          lab.classList.toggle("is-active", lab.contains(t));
+        });
+        const pid = state.composer.profileId;
+        const list = (pid && state.desktops[pid]) || [];
+        for (let i = 0; i < list.length; i++) {
+          const d = list[i] || {};
+          if (String(d.userServiceId || d.id || "") === String(id)) {
+            applyOfficialFromDesktop(state.composer, d);
+            break;
+          }
+        }
+      });
+
+    const help = $("#help-modal");
+    $("#btn-help") &&
+      $("#btn-help").addEventListener("click", function () {
+        if (!help) return;
+        help.classList.remove("hidden");
+        help.setAttribute("aria-hidden", "false");
+      });
+    $("#help-close") &&
+      $("#help-close").addEventListener("click", function () {
+        if (!help) return;
+        help.classList.add("hidden");
+        help.setAttribute("aria-hidden", "true");
+      });
+
+
+    $("#config-modal-close") &&
+      $("#config-modal-close").addEventListener("click", function () {
+        closeConfigModal();
+      });
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" || ev.key === "Esc") {
+        // HARD_GATE#827: Esc closes full-log modal before config/help
+        const lm = $("#log-modal") || $("#log-full-modal");
+        if (
+          lm &&
+          state.logModalPid &&
+          !lm.classList.contains("hidden") &&
+          lm.getAttribute("aria-hidden") !== "true"
+        ) {
+          closeLogModal();
+          return;
+        }
+        const cm = $("#config-modal");
+        if (cm && !cm.classList.contains("hidden")) {
+          closeConfigModal();
+          return;
+        }
+        const help = $("#help-modal");
+        if (help && !help.classList.contains("hidden")) {
+          help.classList.add("hidden");
+          help.setAttribute("aria-hidden", "true");
+        }
+      }
+    });
+
+    try {
+      const u = new URL(location.href);
+      const t = u.searchParams.get("token");
+      if (t) {
+        setToken(t);
+        u.searchParams.delete("token");
+        history.replaceState({}, "", u.pathname + u.search + u.hash);
+        // Token arrived after boot path may have skipped SSE; reconnect with ?token=.
+        state.sseNeedTokenLogged = false;
+        connectSSE();
+      }
+    } catch (_) {}
+  }
+
+  async function boot() {
+    bindCardEvents();
+    wireChrome();
+    pushGlobal("WebUI 就绪 · 多账户保活控制台");
+    await loadSys();
+    await loadProfiles(true);
+    connectSSE();
+    startPolling();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
+  }
+})();

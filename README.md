@@ -1,35 +1,45 @@
-# 移动云电脑保活工具
+# 爱家移动云电脑
 
-这是一个给普通用户使用的移动云电脑保活工具。安装后按提示登录账号、选择云电脑、选择保活协议，就可以让程序定时发送保活流量，减少云电脑因为空闲而自动关机的情况。
+> 多账号云电脑保活：命令行交互版 + Docker WebUI 管理台。  
+> 品牌名统一：**爱家移动云电脑**。
+
+这是一个给普通用户使用的保活工具。安装后按提示登录账号、选择云电脑、**自己选择保活协议**，就可以让程序定时发送保活流量，减少云电脑因为空闲而自动关机的情况。
 
 > 你不需要会写代码，也不需要手动编辑 json 文件。大多数情况下，只要复制命令、按中文提示选择即可。
 
 ## 这个工具能做什么？
 
-- 登录移动云电脑账号。
+- 登录爱家移动云电脑账号。
 - 自动读取你的云电脑列表。
 - 手动选择要保活的云电脑。
-- 手动选择保活协议：`ZTE` 或 `SCG`。
+- **手动选择保活协议**：`ZTE`（中兴）或 `SCG`（深信服）——协议权归你，程序不会擅自改。
 - 云电脑未开机时，首次检测会自动开机一次。
 - 云电脑已运行后，按你设置的间隔循环保活。
 - token 失效时，会用已保存的账号密码自动重新登录并继续保活。
-- 支持一个账号多台云电脑、多账号多开。
+- 支持一个账号多台云电脑、多账号多开（CLI 多终端 / WebUI 多卡片）。
 
 ## 使用前需要准备什么？
 
-你需要一台能联网的电脑，并安装：
+按你选的路径准备：
 
-- Git
-- Python 3.10 或更高版本
-- pip / venv
+| | 方式 A：Python 交互版（CLI） | 方式 B：Docker 网页版（WebUI） |
+|---|---|---|
+| 适合谁 | 习惯终端、单机逐台操作 | 想用浏览器管理、多账户并行 |
+| 本机需要 | Git + Python 3.10+ + pip/venv | Docker 与 Compose 插件（**无需**本机 Python） |
+| 怎么用 | 激活 `.venv` 后 `python3 -m cmcc_cloud_alive` | 一键 `docker compose` 后打开网页 |
+| 协议 | 你自己点选 ZTE / SCG | 每张卡片你自己点选 |
+| 默认模式 | 交互确认后真实保活 | **默认即为真实 live 保活**，无需额外开关 |
 
-如果你不知道有没有安装，先按下面的系统步骤执行即可。
+> **无需代理配置**：本程序直接连接移动云电脑服务，不需要配置 `http_proxy` / `https_proxy`。  
+> Docker 容器内也**禁止走代理**，与交互版同一套源码链路。
 
-> **无需代理配置**：本程序直接连接移动云电脑服务，不需要配置 `http_proxy` / `https_proxy` 等网络代理环境变量。克隆仓库后按下方步骤操作即可使用，零代理零配置。
+---
 
 ## 一键安装并启动
 
-### Ubuntu / Debian / 云服务器
+### 方式 A：本机 Python 交互版（推荐先跑通）
+
+#### Ubuntu / Debian / 云服务器
 
 复制整段到终端执行：
 
@@ -44,7 +54,7 @@ sudo apt update && sudo apt install -y git python3 python3-venv python3-pip \
 && python3 -m cmcc_cloud_alive
 ```
 
-### macOS
+#### macOS
 
 先安装 Homebrew，然后执行：
 
@@ -60,7 +70,7 @@ python3 -m pip install -e .
 python3 -m cmcc_cloud_alive
 ```
 
-### Windows
+#### Windows
 
 使用 PowerShell 执行：
 
@@ -87,12 +97,106 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 python -m cmcc_cloud_alive
 ```
 
-## 第一次怎么用？
+按中文提示操作：登录 → 选云桌面 → **自己选择协议**（深信服 SCG / 中兴 ZTE）→ 开始保活。  
+协议由你点选，程序不会擅自改你已保存账号的协议。
+
+已在项目目录且依赖装好时，也可直接：
+
+```bash
+python3 -m cmcc_cloud_alive --help
+```
+
+### 方式 B：Docker 网页版 WebUI（小白一键）
+
+需要本机已装 **Docker** 与 **Docker Compose 插件**（`docker compose version` 能跑通即可）。**不需要**本机装 Python。
+
+在仓库根目录复制执行：
+
+```bash
+git clone https://github.com/1936-zero/cmcc-cloud-alive.git
+cd cmcc-cloud-alive
+docker compose -f docker/docker-compose.yml up -d --build
+```
+
+浏览器打开：
+
+```text
+http://127.0.0.1:28080
+```
+
+（默认只绑本机 `127.0.0.1:28080`。要改端口可先 `export CMCC_HOST_PORT=端口号` 再启动。）
+
+常用：
+
+```bash
+# 看日志
+docker compose -f docker/docker-compose.yml logs -f cmcc-webui
+
+# 停止（数据保留在 Docker volume）
+docker compose -f docker/docker-compose.yml down
+
+# 更新代码后重建
+git pull
+docker compose -f docker/docker-compose.yml up -d --build
+```
+
+健康检查：
+
+```bash
+curl -s http://127.0.0.1:28080/api/health
+```
+
+正常时 JSON 里 `ok` 为 `true`、`status` 为 `up`，且 `orchestrator` 为 `Orchestrator`。
+
+WebUI 是壳：卡片 / 表单 / 日志；真正保活走与交互版同一套 `cmcc_cloud_alive` 源码（SCG / ZTE）。  
+**默认即为真实 live 保活**，无需额外环境变量。账号与云桌面在网页里添加；每张卡片可单独选协议、模式、间隔。
+
+**协议选择权在用户**：点「中兴」或「深信服」即可；空值时仅历史回落 ZTE，不会因为缺省值把你的账号改成 SCG。
+
+全局「运行日志」与卡片日志时戳均为 **Asia/Shanghai** 完整格式 `YYYY-MM-DD HH:mm:ss`（与交互版一致）。
+
+---
+
+## 用 Docker 启动网页版 WebUI
+
+> 上一节「方式 B」已覆盖小白一键。本节补充数据卷、多账户与排障细节。
+
+### 前置条件
+
+- 已安装 **Docker**
+- 已安装 **Docker Compose 插件**（`docker compose version` 能跑通）
+- 本机**不需要**安装 Python / venv（WebUI 跑在容器里）
+
+### 多账户与并行任务
+
+在 WebUI 里可以为不同账号 / 云电脑创建多个 **profile**，分别配置后并行保活。不必像 CLI 那样再开多个终端窗口。
+
+**同账号多卡片**：须共享同一份 state（`--state acct_*`），分文件会互踢 token。也**不要**与 host 上交互版对同一账号同时登录。
+
+### 数据卷与密钥
+
+- 档案与运行状态落在 Docker volume **`cmcc_data`**（容器内挂载 `/data`）。统一数据根为 **`/data/.cmcc-cloud-alive`**（profiles/jobs/locks），与 CLI `~/.cmcc-cloud-alive` 一致；不会写进 Git 仓库。
+- 可选的访问令牌等请放在主机本地 `.env`（compose 已支持可选 `env_file`），**不要把密钥提交到 Git，也不要打进镜像**。
+
+### 与 CLI 的关系
+
+- 同一仓库、同一业务能力；CLI 与 WebUI **互不强制**。
+- WebUI 只是壳，底层就是交互版那套源码；容器内禁止走代理。
+- CLI 路径：安装依赖后执行 `python3 -m cmcc_cloud_alive`（见上文方式 A）。
+- 也可以在同一镜像里临时跑 CLI 帮助，例如：
+
+```bash
+docker compose -f docker/docker-compose.yml run --rm cmcc-webui cmcc-cloud-alive --help
+```
+
+---
+
+## 第一次怎么用？（CLI）
 
 启动后看到类似界面：
 
 ```text
-移动云电脑保活工具
+爱家移动云电脑保活工具
 请输入命令：login 登录并开始保活；help 查看帮助；exit 退出。
 cmcc>
 ```
@@ -108,11 +212,11 @@ login
 1. 选择保活档案。
    - 第一次用，选择“新增一个账号/云桌面档案”。
    - 以后继续之前的云电脑，选择已有档案。
-2. 输入移动云电脑账号。
+2. 输入爱家移动云电脑账号。
 3. 输入密码。
 4. 程序自动读取云电脑列表。
 5. 输入序号选择要保活的云电脑。
-6. 手动选择协议：`ZTE` 或 `SCG`。
+6. **手动选择协议**：`ZTE` 或 `SCG`。
    - 你选 ZTE，程序就走 ZTE。
    - 你选 SCG，程序就走 SCG。
    - 程序不会偷偷替你自动切换协议。
@@ -135,7 +239,7 @@ login
 
 ### 产品锁定（可选，默认关闭）
 
-公开使用**不需要**任何产品 ID。只有开发者验收 / LIVE  harness 需要把会话钉在指定云电脑时：
+公开使用**不需要**任何产品 ID。只有开发者验收 / LIVE harness 需要把会话钉在指定云电脑时：
 
 ```bash
 export CMCC_ENFORCE_PIN=1
@@ -151,7 +255,7 @@ export CMCC_PRODUCT_SPU=<spuCode>
 
 第一次安装完成后，以后不需要重复安装依赖。
 
-### Linux / macOS
+### Linux / macOS（CLI）
 
 ```bash
 cd cmcc-cloud-alive
@@ -159,7 +263,7 @@ cd cmcc-cloud-alive
 python3 -m cmcc_cloud_alive
 ```
 
-### Windows PowerShell
+### Windows PowerShell（CLI）
 
 ```powershell
 cd cmcc-cloud-alive
@@ -167,13 +271,16 @@ cd cmcc-cloud-alive
 python -m cmcc_cloud_alive
 ```
 
-进入程序后输入：
+进入程序后输入 `login`，选择之前保存的保活档案即可。
 
-```text
-login
+### Docker WebUI
+
+```bash
+cd cmcc-cloud-alive
+docker compose -f docker/docker-compose.yml up -d
 ```
 
-选择之前保存的保活档案即可。
+浏览器打开 `http://127.0.0.1:28080`。
 
 ## 什么是保活档案？
 
@@ -189,6 +296,8 @@ login
 
 程序会自动保存到你的用户目录 `~/.cmcc-cloud-alive/`（Windows 下为用户主目录下的 `.cmcc-cloud-alive`）。这个目录只在你的电脑本地使用，不应该发给别人，也不应该上传到 GitHub。项目仓库内不再默认写入账号/密码。
 
+Docker WebUI 对应数据在 volume `cmcc_data` 的 `/data/.cmcc-cloud-alive`。
+
 ## token 失效了怎么办？
 
 不用手动处理。
@@ -199,11 +308,13 @@ login
 - 保活运行中 token 失效，程序会在下一次检查/保活前自动刷新。
 - 刷新成功后继续保活，不需要你删除 json，也不需要复制 token。
 
+注意：不要让 **Docker WebUI 与 host 交互版对同一账号同时登录**，否则会互踢 token（看起来像“失效特别快”）。同账号多卡片请共用一份 state。
+
 ## 多账号 / 多台云电脑怎么多开？
 
-一个终端窗口运行一个保活进程。
+### CLI
 
-简单理解：
+一个终端窗口运行一个保活进程：
 
 ```text
 一个终端窗口 = 一个保活进程
@@ -211,57 +322,23 @@ login
 一个保活档案 = 一台云电脑的独立记录
 ```
 
-### 多开第 1 台云电脑
-
-打开第一个终端：
-
-```bash
-cd cmcc-cloud-alive
-. .venv/bin/activate
-python3 -m cmcc_cloud_alive
-```
-
-输入：
-
-```text
-login
-```
-
-选择“新增一个账号/云桌面档案”，然后登录并选择第 1 台云电脑。
-
-### 多开第 2 台云电脑
-
-不要关闭第一个终端。再打开第二个终端，执行同样命令：
-
-```bash
-cd cmcc-cloud-alive
-. .venv/bin/activate
-python3 -m cmcc_cloud_alive
-```
-
-输入：
-
-```text
-login
-```
-
-再次选择“新增一个账号/云桌面档案”，然后选择第 2 台云电脑。
-
-可以是同一个账号下的不同云电脑，也可以是不同账号。
+多开第 1 台：打开终端 → `python3 -m cmcc_cloud_alive` → `login` → 新增档案。  
+多开第 2 台：再开一个终端，重复上述步骤，选另一台云电脑。
 
 程序会自动生成独立档案，类似：
 
 ```text
 ~/.cmcc-cloud-alive/profiles/desktop1.json
 ~/.cmcc-cloud-alive/profiles/desktop2.json
-~/.cmcc-cloud-alive/profiles/desktop3.json
 ```
 
-你不需要手动创建这些文件。若本地仍有旧版项目内 `.runtime/profiles/`，启动时仍可被发现并继续使用，但新建档案只会写到 `~/.cmcc-cloud-alive/profiles/`。
+### WebUI
+
+在网页里为每台云电脑建卡片即可并行；**同一登录账号**的多张卡片会共用一份 token 状态，避免互踢。
 
 ## `.venv` 是什么？为什么要激活？
 
-`.venv` 是这个工具专用的 Python 环境。
+`.venv` 是这个工具专用的 Python 环境（仅 CLI 路径需要）。
 
 好处：
 
@@ -312,7 +389,8 @@ python3 -m cmcc_cloud_alive
 
 ### 5. 选错协议怎么办？
 
-停止当前程序，重新启动后再次输入 `login`，选择对应档案，然后重新选择协议即可。
+- **CLI**：停止当前程序，重新 `login`，选择对应档案后重新选择协议。
+- **WebUI**：在卡片上改选「中兴 / 深信服」后重新启动保活。
 
 ### 6. 想退出当前输入怎么办？
 
@@ -325,6 +403,10 @@ q
 ```
 
 程序会尽量返回主菜单。误按 `Ctrl-C` 或 `Ctrl-D` 时，也会尽量避免直接显示 Python 报错。
+
+### 7. WebUI 要不要开 LIVE 开关？
+
+**不需要。** 默认就是真实 live 保活，没有门控环境变量。
 
 ## 安全提醒
 
@@ -342,6 +424,7 @@ cloud_pc*.json
 它们可能包含账号缓存、token、密码缓存或运行日志。
 
 说明：
+
 - `state.json` / `profiles/*.json`：登录会话与密码缓存（敏感）。
 - `scg_kpi.json`：仅 SCG 协议保活的观测计数（心跳/通道/VM 采样等），不含密码；ZTE/CAG 路径没有对等的多通道 SPICE 计数器，因此不写 KPI。
 - 可用环境变量覆盖：`CMCC_ALIVE_STATE`、`CMCC_SCG_KPI`。
@@ -350,7 +433,7 @@ cloud_pc*.json
 
 ## 更新工具
 
-如果以后仓库有更新，进入目录后执行：
+### CLI
 
 ```bash
 cd cmcc-cloud-alive
@@ -369,3 +452,19 @@ git pull
 python -m pip install -e .
 python -m cmcc_cloud_alive
 ```
+
+### Docker WebUI
+
+```bash
+cd cmcc-cloud-alive
+git pull
+docker compose -f docker/docker-compose.yml up -d --build
+```
+
+## 版本说明（#871c）
+
+- 品牌全文统一为 **爱家移动云电脑**。
+- README 结构：一键安装（A 交互 → B Docker 小白）在前，Docker 详解 / 与 CLI 的关系在后。
+- WebUI **默认 live**，无 LIVE 门控。
+- 协议选择权归用户；空值仅历史回落 ZTE，不强制 SCG。
+- 日志时戳：Asia/Shanghai 完整 `YYYY-MM-DD HH:mm:ss`。
