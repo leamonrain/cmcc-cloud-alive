@@ -2084,6 +2084,16 @@ def build_parser():
     p.add_argument("--no-firm-auth", action="store_true")
     p.set_defaults(func=cmd_interactive)
 
+    p = sub.add_parser("simple-alive", help="简约保活：一键登录+开机+保活循环（推荐普通用户使用）")
+    p.add_argument("user_service_id", nargs="?", help="云电脑ID，不指定则自动选择第一个")
+    p.add_argument("--username", default=None, help="账号")
+    p.add_argument("--password", default=None, help="密码")
+    p.add_argument("--cag-refresh", type=int, default=30, help="connectStr续期间隔分钟数（默认30，0=禁用）")
+    p.add_argument("--duration", type=int, default=0, help="运行秒数（0=永久运行）")
+    p.add_argument("--boot-wait", type=int, default=60)
+    p.add_argument("--boot-timeout", type=int, default=180)
+    p.set_defaults(func=cmd_simple_alive)
+
     p = sub.add_parser("cag-keepalive-once")
     p.add_argument("user_service_id", nargs="?")
     p.add_argument("--boot-wait", type=int, default=180)
@@ -2907,26 +2917,30 @@ def _simple_run_keepalive(target, state_path, protocol, interval_minutes, traffi
                         flush=True,
                     )
                 else:
-                    # ZTE must use the same keepalive path that passed the long-test:
-                    # _run_zte_keepalive -> CAG/mux/raw-SPICE session.  Do NOT call
-                    # cmd_product_keepalive here: that command auto-classifies firmAuth
-                    # and would switch to SCG when scAuthCode is present, violating the
-                    # customer's explicit menu choice.
+                    _simple_ensure_token(state_path, f"第{round_no}轮保活前")
+                    hb_result = desktop_keepalive.once(
+                        target, state_path,
+                        send_probe=False, send_point=False,
+                        send_disconnect_time=True, send_connect_events=False,
+                        use_firm_auth=True,
+                    )
+                    hb_code = hb_result.get("heartbeat", {}).get("code", "-")
+                    info_code = hb_result.get("infoReport", {}).get("code", "-")
+                    accepted = hb_result.get("candidateAccepted", False)
+                    status_icon = "✓" if accepted else "△"
                     print(
-                        f"[{core.short_time()}] 第{round_no}轮ZTE保活：手选ZTE，调用长测同款CAG/mux/raw-SPICE "
-                        f"duration={traffic_seconds}s userServiceId={target}",
+                        f"[{core.short_time()}] 第{round_no}轮ZTE保活 {status_icon} "
+                        f"heartbeat={hb_code} info={info_code}",
                         flush=True,
                     )
-                    product_report = _simple_forced_keepalive(
-                        target, state_path, "ZTE", traffic_seconds
-                    ) or {}
-                    print(
-                        f"[{core.short_time()}] 第{round_no}轮ZTE保活完成 "
-                        f"kind={product_report.get('kind')} ok={product_report.get('ok')} "
-                        f"stage={product_report.get('stage')} "
-                        f"duration={product_report.get('duration')}s",
-                        flush=True,
-                    )
+                    # 每6轮（约30分钟）做一次CAG刷新，保持会话活跃
+                    if round_no % 6 == 0:
+                        try:
+                            print(f"[{core.short_time()}] 执行CAG会话刷新...", flush=True)
+                            cag_boot.ensure_running(target, state_path, boot_wait=30, timeout=30, refresh_wait=3)
+                            print(f"[{core.short_time()}] CAG会话刷新完成", flush=True)
+                        except Exception as cag_err:
+                            print(f"[{core.short_time()}] CAG会话刷新失败: {cag_err}", flush=True)
                 _simple_status_tick(target, state_path)
                 if str(mode) == "1":
                     print(f"[{core.short_time()}] 保活结束", flush=True)
@@ -3072,6 +3086,25 @@ def cmd_simple_repl(args):
                 _print(err.response)
         except ValueError as err:
             print(f"输入格式错误：{err}", flush=True)
+
+def cmd_simple_alive(args):
+    """简约保活：命令行参数直连，无需交互"""
+    state_path = str(core.state_path(args))
+    try:
+        from .keepalive_v3 import simple_alive_v3
+        result = simple_alive_v3(
+            username=args.username,
+            password=args.password,
+            state_path=state_path,
+            user_service_id=args.user_service_id,
+            run_seconds=args.duration,
+            connect_str_renew_minutes=args.cag_refresh,
+        )
+        print(f"\n保活结束：运行 {result['elapsed']}秒，共 {result['rounds']} 轮，关机 {result.get('shutdowns', 0)} 次", flush=True)
+    except core.CmccError as err:
+        print(f"保活失败：{err}", flush=True)
+        raise
+
 
 def raise_legacy(args):
     raise core.CmccError("use bin/cmcc_cloud_alive.py for legacy analyze/source-audit commands during migration")

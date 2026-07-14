@@ -1,0 +1,14 @@
+[Unit]
+Description=移动云电脑保活服务
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/opt/cmcc-cloud-alive
+ExecStart=/opt/cmcc-cloud-alive/.venv/bin/python3 -m cmcc_cloud_alive simple-alive --username leamon --password 86609205Zjs --cag-refresh 30 --duration 0
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -249,6 +249,53 @@ login
 - **CLI `--forever`**：SCG 路径启用 `reconnect_fn` 软恢复——遇到 CEM 502 / 连接被维护打断时，会重新拉 connect-info 并续连，而不是直接崩掉。
 - 单轮冒烟（`--duration` 有限、非 forever）仅用于验证能否连通，不保证维护窗口内自动续命。
 
+## 简约保活模式（simple-alive）- 一键执行，无需交互
+
+如果你已经知道云电脑的 ID，想绕过交互菜单直接执行保活：
+
+```bash
+python3 -m cmcc_cloud_alive simple-alive <userServiceId> --username <账号> --password <密码>
+```
+
+### 参数说明
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `userServiceId` | （必填） | 云电脑 ID，如 `12892031` |
+| `--username` | — | 爱家移动云电脑账号 |
+| `--password` | — | 密码 |
+| `--cag-refresh` | `30` | connectStr 续期间隔（分钟），默认30分钟续一次 |
+| `--duration` | `0` | 运行秒数，`0`=永久运行 |
+| `--boot-wait` | `60` | 开机等待秒数 |
+| `--boot-timeout` | `180` | 开机超时秒数 |
+
+### 示例
+
+```bash
+# 保活指定云电脑，永久运行
+python3 -m cmcc_cloud_alive simple-alive 12892031 --username 138xxxx --password xxx
+
+# 保活2小时
+python3 -m cmcc_cloud_alive simple-alive 12892031 --username 138xxxx --password xxx --duration 7200
+```
+
+**该模式采用 CAG TCP/TLS 真实协议连接**：自动建立与 CAG 网关的加密隧道，执行 SPICE 主握手，在服务器侧注册为真实客户端会话。当连接因服务端空闲超时断开时，自动重建连接。此方式比纯 HTTP 心跳更可靠，实测可连续保活超过 60 分钟无关机。
+
+### 搭配 systemd 开机自启
+
+仓库提供 systemd service 模板：
+
+```bash
+# 修改 bin/cmcc-alive.service 中的账号密码和云电脑 ID
+sudo cp bin/cmcc-alive.service /etc/systemd/system/cmcc-alive.service
+sudo systemctl daemon-reload
+sudo systemctl enable cmcc-alive
+sudo systemctl start cmcc-alive
+
+# 查看状态
+sudo systemctl status cmcc-alive
+```
+
 ### 产品锁定（可选，默认关闭）
 
 公开使用**不需要**任何产品 ID。只有开发者验收 / LIVE harness 需要把会话钉在指定云电脑时：
