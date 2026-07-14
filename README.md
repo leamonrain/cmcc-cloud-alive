@@ -1,13 +1,17 @@
 # 爱家移动云电脑
 
+[![License: MIT](https://img.shields.io/github/license/1936-zero/cmcc-cloud-alive)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Docker](https://img.shields.io/badge/Docker-WebUI-2496ED?logo=docker&logoColor=white)](docker/docker-compose.yml)
+[![Protocol](https://img.shields.io/badge/协议-ZTE%20%7C%20SCG-2ea44f)](#这个工具能做什么)
+[![Stars](https://img.shields.io/github/stars/1936-zero/cmcc-cloud-alive?style=social)](https://github.com/1936-zero/cmcc-cloud-alive)
+
 > 多账号云电脑保活：命令行交互版 + Docker WebUI 管理台。  
 > 品牌名统一：**爱家移动云电脑**。
 
 这是一个给普通用户使用的保活工具。安装后按提示登录账号、选择云电脑、**自己选择保活协议**，就可以让程序定时发送保活流量，减少云电脑因为空闲而自动关机的情况。
 
 > 你不需要会写代码，也不需要手动编辑 json 文件。大多数情况下，只要复制命令、按中文提示选择即可。
-
-[![LinuxDo](https://img.shields.io/badge/社区-LinuxDo-blue?style=for-the-badge)](https://linux.do/t/topic/1776670)
 
 ## 这个工具能做什么？
 
@@ -476,6 +480,10 @@ docker compose -f docker/docker-compose.yml up -d --build
 - WebUI **默认 live**，无 LIVE 门控。
 - 协议选择权归用户；空值仅历史回落 ZTE，不强制 SCG。
 - 日志时戳：Asia/Shanghai 完整 `YYYY-MM-DD HH:mm:ss`。
+
+## 开源协议
+
+本项目采用 **[MIT License](LICENSE)**。
 
 ## 社区与支持
 
