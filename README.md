@@ -126,6 +126,12 @@ http://127.0.0.1:28080
 
 （默认只绑本机 `127.0.0.1:28080`。要改端口可先 `export CMCC_HOST_PORT=端口号` 再启动。）
 
+界面预览：
+
+| 新建账号表单 + 多卡片 | 双卡片保活中 | 完整日志弹层 |
+|---|---|---|
+| ![新建账号表单与多卡片](assets/webui/webui-form-and-cards.png) | ![双卡片保活中](assets/webui/webui-cards-running.png) | ![完整日志弹层](assets/webui/webui-full-log.png) |
+
 常用：
 
 ```bash
