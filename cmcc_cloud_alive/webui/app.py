@@ -237,12 +237,10 @@ def parse_job_timing_fields(body: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         if int(duration) == 0:
             simple_mode = "2"
     extra_args = [
-        "--interval-minutes",
-        str(interval_minutes),
-        "--traffic-seconds",
-        str(traffic),
-        "--mode",
-        simple_mode,
+        "--heartbeat-interval",
+        str(interval),
+        "--duration",
+        str(duration),
     ]
     return {
         "intervalSec": interval,
@@ -499,6 +497,11 @@ _SHARED_ACCOUNT_KEYS = (
     "lastLoginStatus",
     "lastLoginAttemptAt",
     "lastLoginError",
+    "userServiceId",
+    "selectedUserServiceId",
+    "desktopLabel",
+    "vmId",
+    "lastVmId",
 )
 
 
@@ -841,6 +844,34 @@ async def profiles_delete(request: Request) -> JSONResponse:
             "stopDetail": stop_detail,
         }
     )
+
+
+async def profiles_update(request: Request) -> JSONResponse:
+    """Update profile fields (displayName, protocol, clientProfile, mode, interval, etc)."""
+    pid = request.path_params["profile_id"]
+    if not pid or any(x in pid for x in ("/", "\\", "..")):
+        return api_error("VALIDATION", "invalid profile id", 400)
+    path = _profile_path(pid)
+    if not path.is_file():
+        return api_error("NOT_FOUND", f"profile {pid} not found", 404)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    state = _read_state(path)
+    upd = False
+    for k in ("displayName", "protocol", "clientProfile", "mode", "intervalMin", "trafficSec", "intervalSec"):
+        if k in body and body.get(k) is not None:
+            state[k] = body[k]
+            upd = True
+    if "protocol" in body:
+        state["lastOfficialProtocol"] = body["protocol"]
+    if upd:
+        state["updatedAt"] = _now_iso()
+        _write_state(path, state)
+    return JSONResponse({"ok": True, "profile": _public_profile(pid, state, path)})
 
 
 def _password_login_for_profile(
@@ -1207,6 +1238,7 @@ async def profiles_desktops(request: Request) -> JSONResponse:
         "yes",
     )
     state = _read_state(path)
+    state = _hydrate_profile_from_shared(state)
     token = (state.get("sohoToken") or state.get("token") or "").strip()
     cached = state.get("cloudList")
     has_cache = isinstance(cached, list) and bool(state.get("lastCloudListAt") or cached)
@@ -1219,10 +1251,19 @@ async def profiles_desktops(request: Request) -> JSONResponse:
         source = "cache"
     elif token:
         try:
-            raw_items = await asyncio.to_thread(_list_clouds_for_profile, path)
+            live_path = _resolve_live_state_path(path, state)
+            raw_items = await asyncio.to_thread(_list_clouds_for_profile, live_path)
             source = "list_clouds"
             # re-read after merge_state wrote cloudList into the same profile file
-            state = _read_state(path)
+            state = _read_state(live_path)
+            # sync back to card profile so next cache read has fresh data
+            if str(live_path) != str(path):
+                card_state = _read_state(path)
+                if state.get("cloudList"):
+                    card_state["cloudList"] = state["cloudList"]
+                    card_state["lastCloudListAt"] = state.get("lastCloudListAt", _now_iso())
+                    card_state["updatedAt"] = _now_iso()
+                    _write_state(path, card_state)
         except Exception as e:
             # Prefer CmccError details without requiring core at import time
             msg = str(e) or e.__class__.__name__
@@ -1345,7 +1386,7 @@ def resolve_user_protocol(body_protocol=None, state=None, fallback="ZTE"):
             u = "ZTE"
         if u == "SANGFOR":
             u = "SCG"
-        if u in ("ZTE", "SCG"):
+        if u in ("ZTE", "SCG", "V3"):
             return u
     return str(fallback or "ZTE").upper()
 
@@ -1399,14 +1440,12 @@ async def profiles_start_job(request: Request) -> JSONResponse:
             interval_sec=timing["intervalSec"],
             traffic_sec=timing["trafficSec"],
             duration_sec=timing["durationSec"],
-            user_service_id=str(usid) if usid else None,
         )
     except TypeError:
         # older orchestrator signature: pass extra_args only, merge fields on response
         try:
             job = ORCH.start_job(
                 pid, live_path, protocol=protocol, mode=mode, extra_args=timing["extraArgs"],
-                user_service_id=str(usid) if usid else None,
             )
             job = dict(job)
             job["intervalSec"] = timing["intervalSec"]
@@ -1726,6 +1765,7 @@ routes = [
     Route("/api/profiles", endpoint=profiles_list, methods=["GET"]),
     Route("/api/profiles", endpoint=profiles_create, methods=["POST"]),
     Route("/api/profiles/{profile_id}", endpoint=profiles_get, methods=["GET"]),
+    Route("/api/profiles/{profile_id}", endpoint=profiles_update, methods=["PUT"]),
     Route("/api/profiles/{profile_id}", endpoint=profiles_delete, methods=["DELETE"]),
     Route("/api/profiles/{profile_id}/login", endpoint=profiles_login, methods=["POST"]),
     Route("/api/profiles/{profile_id}/desktops", endpoint=profiles_desktops, methods=["GET"]),

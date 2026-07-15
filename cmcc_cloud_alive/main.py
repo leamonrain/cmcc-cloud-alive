@@ -2420,6 +2420,8 @@ def build_parser():
     ip.add_argument("--status-interval", type=int, default=60, help="status print interval seconds")
     ip.add_argument("--report-file", default=None, help="write JSON report to this path")
     ip.add_argument("--non-interactive", action="store_true", help="skip prompts; auto-select first target")
+    ip.add_argument("--boot-wait", type=float, default=180)
+    ip.add_argument("--boot-timeout", type=float, default=120)
     ip.add_argument("--probe", action="store_true")
     ip.add_argument("--point", action="store_true")
     ip.add_argument("--connect-events", action="store_true")

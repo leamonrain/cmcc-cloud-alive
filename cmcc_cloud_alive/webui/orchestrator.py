@@ -498,6 +498,177 @@ class SubprocessBackend:
         return offset, pending
 
 
+class SimpleAliveBackend:
+    """V3 CAG TCP/TLS keepalive via simple-alive subprocess (proper lifecycle)."""
+
+    name = "subprocess-v3"
+
+    def __init__(
+        self,
+        orch: "Orchestrator",
+        job_id: str,
+        state_path: Path,
+        extra_args: Optional[List[str]],
+        stop_evt: threading.Event,
+        log_path: Path,
+    ) -> None:
+        self.orch = orch
+        self.job_id = job_id
+        self.state_path = state_path
+        self.extra_args = list(extra_args or [])
+        self.stop_evt = stop_evt
+        self.log_path = log_path
+        self._proc: Optional[subprocess.Popen] = None
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        cmd = self._build_cmd()
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_f = open(self.log_path, "a", encoding="utf-8")
+        try:
+            self._proc = subprocess.Popen(
+                cmd,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception as e:
+            log_f.close()
+            raise RuntimeError(f"V3 spawn failed: {e}") from e
+        self.orch._append_log(
+            self.job_id,
+            f"[orch] V3 spawned pid={self._proc.pid} state={self.state_path.name}",
+        )
+        self._thread = threading.Thread(
+            target=self._watch,
+            args=(log_f,),
+            name=f"v3-job-{self.job_id}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self, timeout: float = 5.0) -> None:
+        self.stop_evt.set()
+        proc = self._proc
+        if proc and proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+        t = self._thread
+        if t and t.is_alive():
+            t.join(timeout=timeout)
+
+    def pid(self) -> Optional[int]:
+        if self._proc is None:
+            return None
+        return self._proc.pid if self._proc.poll() is None else self._proc.pid
+
+    def _build_cmd(self) -> List[str]:
+        creds = _live_creds_from_state(self.state_path)
+        cmd = [
+            sys.executable, "-m", "cmcc_cloud_alive",
+            "--state", str(self.state_path),
+            "simple-alive",
+        ]
+        usid = creds.get("user_service_id")
+        if usid:
+            cmd.append(usid)
+        if creds.get("username"):
+            cmd.extend(["--username", creds["username"]])
+        if creds.get("password"):
+            cmd.extend(["--password", creds["password"]])
+        for i, arg in enumerate(self.extra_args):
+            if arg == "--heartbeat-interval" and i + 1 < len(self.extra_args):
+                val = self.extra_args[i + 1]
+                mins = max(1, int(val) // 60)
+                cmd.extend(["--cag-refresh", str(mins)])
+                break
+        else:
+            cmd.extend(["--cag-refresh", "5"])
+        return cmd
+
+    def _watch(self, log_f: Any) -> None:
+        proc = self._proc
+        offset = 0
+        pending = ""
+        try:
+            try:
+                if self.log_path.is_file():
+                    offset = self.log_path.stat().st_size
+            except Exception:
+                offset = 0
+            while proc and proc.poll() is None and not self.stop_evt.is_set():
+                try:
+                    offset, pending = self._drain_log(offset, pending)
+                except Exception:
+                    pass
+                if self.stop_evt.wait(0.5):
+                    break
+            try:
+                offset, pending = self._drain_log(offset, pending, final=True)
+            except Exception:
+                pass
+            rc = proc.returncode if proc else None
+            if self.stop_evt.is_set():
+                self.orch._mark_stopped(self.job_id, detail="stopped by API", exit_code=rc)
+            else:
+                status = "stopped" if rc == 0 else "error"
+                self.orch._mark_stopped(
+                    self.job_id,
+                    detail=f"V3 child exited rc={rc}",
+                    exit_code=rc,
+                    status=status,
+                )
+        finally:
+            try:
+                log_f.close()
+            except Exception:
+                pass
+
+    def _drain_log(self, offset: int, pending: str, *, final: bool = False) -> tuple:
+        if not self.log_path.is_file():
+            return offset, pending
+        with open(self.log_path, "r", encoding="utf-8", errors="replace") as rf:
+            rf.seek(offset)
+            chunk = rf.read()
+            offset = rf.tell()
+        if not chunk:
+            if final and pending.strip():
+                self.orch._append_log(self.job_id, pending.rstrip("\r\n"))
+                pending = ""
+            return offset, pending
+        data = pending + chunk
+        lines = data.splitlines(keepends=True)
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            pending = lines.pop()
+        else:
+            pending = ""
+        for raw in lines:
+            line = raw.rstrip("\r\n")
+            if line == "":
+                continue
+            self.orch._append_log(self.job_id, line)
+        if final and pending.strip():
+            self.orch._append_log(self.job_id, pending.rstrip("\r\n"))
+            pending = ""
+        return offset, pending
+
+
 class Orchestrator:
     """In-memory job table + per-profile mutex + dry-run/LIVE backends."""
 
@@ -605,6 +776,8 @@ class Orchestrator:
         duration_sec: Optional[int] = None,
     ) -> Dict[str, Any]:
         protocol = (protocol or "ZTE").upper()
+        if protocol == "V3":
+            return self._start_job_v3(profile_id, state_path, protocol, extra_args, mode, interval_sec, traffic_sec, duration_sec)
         if protocol not in ("ZTE", "SCG"):
             raise ValueError("protocol must be ZTE or SCG")
         mode = (mode or "dry-run").lower()
@@ -624,6 +797,7 @@ class Orchestrator:
             if existing and self._jobs.get(existing, {}).get("status") == "running":
                 raise RuntimeError("PROFILE_IN_USE")
 
+            old_jid = self._by_profile.get(profile_id)
             job_id = uuid.uuid4().hex[:12]
             job = {
                 "id": job_id,
@@ -651,6 +825,10 @@ class Orchestrator:
             self._jobs[job_id] = job
             self._by_profile[profile_id] = job_id
             self._log_buffers.setdefault(job_id, [])
+            if old_jid and old_jid != job_id:
+                old_logs = self._log_buffers.get(old_jid, [])
+                if old_logs:
+                    self._log_buffers[job_id] = list(old_logs[-200:]) + self._log_buffers[job_id]
             stop_evt = threading.Event()
             self._stop_events[job_id] = stop_evt
 
@@ -723,6 +901,63 @@ class Orchestrator:
                 "detail": job_out["detail"],
             },
         )
+        return job_out
+
+    def _start_job_v3(self, profile_id, state_path, protocol, extra_args, mode, interval_sec, traffic_sec, duration_sec):
+        """V3 CAG TCP/TLS keepalive via SimpleAliveBackend (proper lifecycle + logs)."""
+        sp = Path(state_path) if not isinstance(state_path, Path) else state_path
+        job_id = uuid.uuid4().hex[:12]
+        job = {
+            "id": job_id, "jobId": job_id, "profileId": profile_id,
+            "statePath": str(sp), "protocol": "V3", "mode": mode or "live",
+            "status": "running", "pid": None, "startedAt": _now_iso(), "stoppedAt": None,
+            "detail": "V3 keepalive starting", "extraArgs": list(extra_args or []),
+            "intervalSec": interval_sec, "trafficSec": traffic_sec, "durationSec": duration_sec,
+            "backend": "subprocess-v3", "exitCode": None,
+        }
+        with self._lock:
+            existing = self._by_profile.get(profile_id)
+            if existing and self._jobs.get(existing, {}).get("status") == "running":
+                raise RuntimeError("PROFILE_IN_USE")
+            old_jid = self._by_profile.get(profile_id)
+            self._jobs[job_id] = job
+            self._by_profile[profile_id] = job_id
+            self._log_buffers.setdefault(job_id, [])
+            if old_jid and old_jid != job_id:
+                old_logs = self._log_buffers.get(old_jid, [])
+                if old_logs:
+                    self._log_buffers[job_id] = list(old_logs[-200:]) + self._log_buffers[job_id]
+            stop_evt = threading.Event()
+            self._stop_events[job_id] = stop_evt
+        jdir = _jobs_dir() / job_id
+        jdir.mkdir(parents=True, exist_ok=True)
+        log_path = jdir / "worker.log"
+        backend = SimpleAliveBackend(
+            self, job_id, state_path=sp, extra_args=extra_args,
+            stop_evt=stop_evt, log_path=log_path,
+        )
+        try:
+            backend.start()
+            with self._lock:
+                self._backends[job_id] = backend
+                pid = backend.pid()
+                if pid is not None:
+                    job["pid"] = pid
+                    job["detail"] = f"V3 subprocess pid={pid}"
+                job_out = dict(self._jobs[job_id])
+        except Exception as e:
+            with self._lock:
+                j = self._jobs.get(job_id)
+                if j:
+                    j["status"] = "error"
+                    j["stoppedAt"] = _now_iso()
+                    j["detail"] = f"V3 start failed: {e}"
+                self._stop_events.pop(job_id, None)
+            self._append_log(job_id, f"[orch] V3 start failed: {e}")
+            self._emit("job_status", {"jobId": job_id, "profileId": profile_id, "status": "error", "detail": str(e)})
+            raise
+        self._append_log(job_id, f"[orch] V3 started protocol=V3 mode={mode} state={sp.name}")
+        self._emit("job_status", {"jobId": job_id, "profileId": profile_id, "status": "running", "at": job_out["startedAt"]})
         return job_out
 
     def stop_job(self, profile_id: str) -> Dict[str, Any]:
