@@ -1,0 +1,12 @@
+#!/bin/bash
+set -e
+echo "Upgrading $TRIM_APPNAME $TRIM_APPVER..." > "$TRIM_TEMP_LOGFILE"
+# Re-run install logic for new dependencies
+if [ -f "$TRIM_APPDEST/src/.venv/bin/activate" ]; then
+  source "$TRIM_APPDEST/src/.venv/bin/activate"
+  if [ -d "$TRIM_APPDEST/wheels" ] && ls "$TRIM_APPDEST/wheels/"*.whl 1>/dev/null 2>&1; then
+    pip install --no-index --find-links="$TRIM_APPDEST/wheels" -r src/requirements.txt --upgrade
+    rm -rf "$TRIM_APPDEST/wheels"
+  fi
+fi
+exit 0

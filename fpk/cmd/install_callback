@@ -1,0 +1,25 @@
+#!/bin/bash
+set -e
+PATH="/var/apps/python312/target/bin:$PATH"
+
+echo "Installing $TRIM_APPNAME $TRIM_APPVER" > "$TRIM_TEMP_LOGFILE"
+cd "$TRIM_APPDEST"
+
+# Create virtualenv if not exists
+if [ ! -d src/.venv ]; then
+  python3 -m venv src/.venv
+fi
+source src/.venv/bin/activate
+
+# Offline install from bundled wheels
+if [ -d "$TRIM_APPDEST/wheels" ] && ls "$TRIM_APPDEST/wheels/"*.whl 1>/dev/null 2>&1; then
+  pip install --no-index --find-links="$TRIM_APPDEST/wheels" -r src/requirements.txt
+  rm -rf "$TRIM_APPDEST/wheels"
+else
+  echo "No wheels found at $TRIM_APPDEST/wheels, trying online" > "$TRIM_TEMP_LOGFILE"
+  pip install -r src/requirements.txt
+fi
+
+# Ensure log directory
+mkdir -p "$TRIM_PKGVAR"/logs 2>/dev/null || true
+echo "Installation complete"

@@ -1,0 +1,13 @@
+#!/bin/bash
+set -e
+echo "Uninstalling $TRIM_APPNAME" > "$TRIM_TEMP_LOGFILE"
+
+# Stop the service
+if [ -f "$TRIM_PKGDIR/cmd/main" ]; then
+  "$TRIM_PKGDIR/cmd/main" stop 2>/dev/null || true
+fi
+
+# Cleanup .venv
+rm -rf "$TRIM_APPDEST/src/.venv" 2>/dev/null || true
+
+echo "Uninstall complete"

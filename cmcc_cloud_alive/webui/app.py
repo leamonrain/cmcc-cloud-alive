@@ -1,12 +1,11 @@
-"""Starlette WebUI for multi-profile keepalive orchestration (J3).
+"""Starlette WebUI for multi-profile per-desktop keepalive orchestration (FNOS).
 
-Parent process only: REST + SSE + static shell. Does NOT run keepalive loops
-on the ASGI event-loop thread. Uses in-memory FakeOrchestrator until J2 lands
-`cmcc_cloud_alive.webui.orchestrator` (same method names).
+Parent process only: REST + static shell. No SSE (front-end polls).
+Uses in-memory FakeOrchestrator until real Orchestrator is available.
+Per-desktop composite keys "{profile_id}:{desktop_id}" for parallel jobs.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
@@ -16,12 +15,12 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
@@ -296,118 +295,81 @@ class OptionalTokenMiddleware(BaseHTTPMiddleware):
 # ---------------------------------------------------------------------------
 
 class FakeOrchestrator:
-    """In-memory job table. Method names match planned J2 orchestrator."""
+    """In-memory job table. Per-desktop composite keys; no SSE."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._jobs: Dict[str, Dict[str, Any]] = {}  # job_id -> job
-        self._by_profile: Dict[str, str] = {}  # profile_id -> job_id
+        self._jobs: Dict[str, Dict[str, Any]] = {}
+        self._by_key: Dict[str, str] = {}
         self._log_buffers: Dict[str, List[Dict[str, str]]] = {}
-        self._subscribers: List[asyncio.Queue] = []
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
-    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
-        self._loop = loop
-
-    def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue(maxsize=256)
-        self._subscribers.append(q)
-        return q
-
-    def unsubscribe(self, q: asyncio.Queue) -> None:
-        try:
-            self._subscribers.remove(q)
-        except ValueError:
-            pass
-
-    def _emit(self, event: str, data: Dict[str, Any]) -> None:
-        payload = {"event": event, "data": data}
-        for q in list(self._subscribers):
-            try:
-                q.put_nowait(payload)
-            except asyncio.QueueFull:
-                pass
+    def _job_key(self, profile_id: str, desktop_id: str) -> str:
+        return f"{profile_id}:{desktop_id}"
 
     def list_jobs(self) -> List[Dict[str, Any]]:
         with self._lock:
             return [dict(j) for j in self._jobs.values()]
 
-    def get_status(self, profile_id: str) -> Dict[str, Any]:
+    def get_status(self, profile_id: str, desktop_id: str) -> Dict[str, Any]:
+        key = self._job_key(profile_id, desktop_id)
         with self._lock:
-            jid = self._by_profile.get(profile_id)
+            jid = self._by_key.get(key)
             if not jid:
-                return {"profileId": profile_id, "status": "idle", "jobId": None}
+                return {"profileId": profile_id, "desktopId": desktop_id, "status": "idle", "jobId": None}
             j = self._jobs.get(jid) or {}
-            return {
-                "profileId": profile_id,
-                "status": j.get("status", "unknown"),
-                "jobId": jid,
-                "protocol": j.get("protocol"),
-                "pid": j.get("pid"),
-                "startedAt": j.get("startedAt"),
-            }
+            return {"profileId": profile_id, "desktopId": desktop_id, "jobId": jid,
+                    "status": j.get("status", "unknown"), "protocol": j.get("protocol"),
+                    "pid": j.get("pid"), "startedAt": j.get("startedAt")}
+
+    def get_statuses(self, profile_id: str) -> List[Dict[str, Any]]:
+        out = []
+        prefix = profile_id + ":"
+        with self._lock:
+            for key, jid in self._by_key.items():
+                if not key.startswith(prefix):
+                    continue
+                did = key[len(prefix):]
+                j = self._jobs.get(jid) or {}
+                out.append({"profileId": profile_id, "desktopId": did, "jobId": jid,
+                            "status": j.get("status", "idle"), "protocol": j.get("protocol"),
+                            "pid": j.get("pid"), "startedAt": j.get("startedAt")})
+        return out
 
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
             j = self._jobs.get(job_id)
             return dict(j) if j else None
 
-    def start_job(
-        self,
-        profile_id: str,
-        state_path: Path,
-        protocol: str = "ZTE",
-        extra_args: Optional[List[str]] = None,
-        mode: str = "live",
-        interval_sec: Optional[int] = None,
-        traffic_sec: Optional[int] = None,
-        duration_sec: Optional[int] = None,
-    ) -> Dict[str, Any]:
+    def start_job(self, profile_id: str, desktop_id: str, state_path: Path,
+                  protocol: str = "ZTE", extra_args: Optional[List[str]] = None,
+                  mode: str = "live", interval_sec: Optional[int] = None,
+                  traffic_sec: Optional[int] = None,
+                  duration_sec: Optional[int] = None) -> Dict[str, Any]:
         protocol = (protocol or "ZTE").upper()
-        if protocol not in ("ZTE", "SCG"):
-            raise ValueError("protocol must be ZTE or SCG")
+        if protocol not in ("ZTE", "SCG", "V3"):
+            raise ValueError("protocol must be ZTE, SCG, or V3")
+        key = self._job_key(profile_id, desktop_id)
         with self._lock:
-            existing = self._by_profile.get(profile_id)
+            existing = self._by_key.get(key)
             if existing and self._jobs.get(existing, {}).get("status") == "running":
-                raise RuntimeError("PROFILE_IN_USE")
+                raise RuntimeError("JOB_IN_USE")
             job_id = uuid.uuid4().hex[:12]
-            job = {
-                "id": job_id,
-                "jobId": job_id,
-                "profileId": profile_id,
-                "statePath": str(state_path),
-                "protocol": protocol,
-                "mode": mode or "live",
-                "status": "running",
-                "pid": None,  # fake: no subprocess yet (J2)
-                "startedAt": _now_iso(),
-                "stoppedAt": None,
-                "detail": "fake orchestrator dry-run (no LIVE child)",
-                "extraArgs": list(extra_args or []),
-                "intervalSec": interval_sec,
-                "trafficSec": traffic_sec,
-                "durationSec": duration_sec,
-            }
+            job = {"id": job_id, "jobId": job_id, "profileId": profile_id, "desktopId": desktop_id,
+                   "statePath": str(state_path), "protocol": protocol, "mode": mode or "live",
+                   "status": "running", "pid": None, "startedAt": _now_iso(), "stoppedAt": None,
+                   "detail": "fake orchestrator dry-run (no LIVE child)",
+                   "extraArgs": list(extra_args or []), "intervalSec": interval_sec,
+                   "trafficSec": traffic_sec, "durationSec": duration_sec}
             self._jobs[job_id] = job
-            self._by_profile[profile_id] = job_id
+            self._by_key[key] = job_id
             self._log_buffers.setdefault(job_id, []).append(
-                {"at": _now_iso(), "line": f"[fake] start {protocol} mode={job['mode']} state={state_path.name}"}
-            )
-            self._emit(
-                "job_status",
-                {
-                    "jobId": job_id,
-                    "profileId": profile_id,
-                    "status": "running",
-                    "at": job["startedAt"],
-                    "detail": job["detail"],
-                },
-            )
+                {"at": _now_iso(), "line": f"[fake] start {protocol} mode={job['mode']} desktop={desktop_id}"})
             return dict(job)
 
-    def stop_job(self, profile_id: str) -> Dict[str, Any]:
+    def stop_job(self, profile_id: str, desktop_id: str) -> Dict[str, Any]:
+        key = self._job_key(profile_id, desktop_id)
         with self._lock:
-            jid = self._by_profile.get(profile_id)
+            jid = self._by_key.get(key)
             if not jid or jid not in self._jobs:
                 raise KeyError("NOT_FOUND")
             job = self._jobs[jid]
@@ -417,31 +379,35 @@ class FakeOrchestrator:
             job["stoppedAt"] = _now_iso()
             job["detail"] = "stopped by API"
             self._log_buffers.setdefault(jid, []).append(
-                {"at": job["stoppedAt"], "line": "[fake] stop requested"}
-            )
-            self._emit(
-                "job_status",
-                {
-                    "jobId": jid,
-                    "profileId": profile_id,
-                    "status": "stopped",
-                    "at": job["stoppedAt"],
-                },
-            )
+                {"at": job["stoppedAt"], "line": "[fake] stop requested"})
             return dict(job)
 
-    def recent_logs(self, job_id: Optional[str] = None, profile_id: Optional[str] = None, limit: int = 100) -> List[Dict[str, str]]:
-        """Return job/card logs only when scoped.
-
-        HARD_GATE#768-B / ASSIGN#785#4: unscoped /api/logs must not flatten
-        job buffers into page-level global log. Card logs stay profile/job scoped.
-        """
+    def stop_all(self, profile_id: str) -> List[Dict[str, Any]]:
+        results = []
+        prefix = profile_id + ":"
         with self._lock:
-            if not job_id and profile_id:
-                job_id = self._by_profile.get(profile_id)
-            if not job_id:
-                return []
-            return list(self._log_buffers.get(job_id, []))[-limit:]
+            keys = [k for k in self._by_key if k.startswith(prefix)]
+        for key in keys:
+            did = key[len(profile_id) + 1:]
+            try:
+                results.append(self.stop_job(profile_id, did))
+            except KeyError:
+                pass
+        return results
+
+    def recent_logs(self, profile_id: str, desktop_id: Optional[str] = None,
+                    limit: int = 200) -> Dict[str, List[Dict[str, str]]]:
+        with self._lock:
+            prefix = profile_id + ":"
+            result: Dict[str, List[Dict[str, str]]] = {}
+            for key, jid in self._by_key.items():
+                if not key.startswith(prefix):
+                    continue
+                did = key[len(prefix):]
+                if desktop_id and did != desktop_id:
+                    continue
+                result[did] = list(self._log_buffers.get(jid, []))[-limit:]
+            return result
 
 
 def _load_orchestrator() -> Any:
@@ -638,15 +604,14 @@ def _write_state(path: Path, data: Dict[str, Any]) -> None:
 
 
 def _public_profile(profile_id: str, state: Dict[str, Any], path: Path) -> Dict[str, Any]:
-    st = ORCH.get_status(profile_id) if hasattr(ORCH, "get_status") else {"status": "idle"}
-    job_status = st.get("status") or "idle"
-    # Official protocol slot (from spu / last list) ≠ user-selected keepalive protocol.
     spu = state.get("spuCode") or state.get("lastSpuCode") or ""
     spu = str(spu) if spu is not None else ""
     official = state.get("lastOfficialProtocol") or state.get("protocolHint") or ""
     official = str(official).upper() if official else ""
     if not official and spu:
         official = _spu_protocol_hint(spu)
+    statuses = ORCH.get_statuses(profile_id) if hasattr(ORCH, "get_statuses") else []
+    any_running = any(s.get("status") == "running" for s in statuses)
     return {
         "id": profile_id,
         "displayName": state.get("displayName") or profile_id,
@@ -662,8 +627,8 @@ def _public_profile(profile_id: str, state: Dict[str, Any], path: Path) -> Dict[
         "loginMode": state.get("loginMode") or ("sub" if state.get("isSubAccount") else "main"),
         "clientProfile": state.get("clientProfile") or "linux",
         "draft": bool(state.get("draft")),
-        "jobStatus": job_status,
-        "jobId": st.get("jobId"),
+        "jobStatus": "running" if any_running else "idle",
+        "desktopStatuses": statuses,
         "statePath": str(path),
         "updatedAt": state.get("updatedAt") or (
             datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).astimezone().isoformat(timespec="seconds")
@@ -805,18 +770,18 @@ async def profiles_delete(request: Request) -> JSONResponse:
     stopped = False
     stop_detail = None
     try:
-        st = ORCH.get_status(pid) if hasattr(ORCH, "get_status") else {}
-        status = (st or {}).get("status") or "idle"
-        if status == "running":
-            try:
-                job = ORCH.stop_job(pid)
-                stopped = True
-                stop_detail = (job or {}).get("status") or "stopped"
-            except KeyError:
-                # No active job mapping; continue to delete file.
-                stop_detail = "no_job"
-            except Exception as e:
-                return api_error("STOP_FAILED", f"stop before delete failed: {e}", 500)
+        statuses = ORCH.get_statuses(pid) if hasattr(ORCH, "get_statuses") else []
+        for s in statuses:
+            did = s.get("desktopId", "")
+            if s.get("status") == "running":
+                try:
+                    ORCH.stop_job(pid, did)
+                    stopped = True
+                    stop_detail = "stopped"
+                except KeyError:
+                    pass
+                except Exception as e:
+                    return api_error("STOP_FAILED", f"stop {pid}/{did} failed: {e}", 500)
     except Exception as e:
         return api_error("STOP_FAILED", f"status before delete failed: {e}", 500)
 
@@ -1402,29 +1367,25 @@ async def profiles_start_job(request: Request) -> JSONResponse:
         body = {}
     if not isinstance(body, dict):
         body = {}
+    did = body.get("desktopId") or request.query_params.get("desktopId") or ""
+    if not did:
+        return api_error("VALIDATION", "desktopId is required", 400)
     mode = body.get("mode") or "live"
     try:
         timing = parse_job_timing_fields(body)
     except ValueError as e:
         return api_error("VALIDATION", str(e))
-    # HARD_GATE#850: save-and-keepalive commits draft into timeline
     state = _read_state(path)
-    # HARD_GATE#871c: user protocol choice — body → profile → ZTE empty-only
     protocol = resolve_user_protocol(body.get("protocol"), state)
+    # Per-desktop protocol override
+    desktop_protos = state.get("desktopProtocols") or {}
+    if did in desktop_protos:
+        protocol = desktop_protos[did]
     if state.get("draft"):
         state.pop("draft", None)
         state["updatedAt"] = _now_iso()
         _write_state(path, state)
-    # HARD_GATE#868: card keeps UI meta; live child uses shared acct_*.json token
-    # and --user-service-id from THIS card (not from shared, avoids dual-card race).
-    usid = (
-        state.get("userServiceId")
-        or state.get("selectedUserServiceId")
-        or state.get("user_service_id")
-        or ""
-    )
     live_path = _resolve_live_state_path(path, state)
-    # ensure shared has latest credentials/token before spawn
     try:
         _sync_shared_account(state)
         live_path = _resolve_live_state_path(path, state)
@@ -1432,37 +1393,18 @@ async def profiles_start_job(request: Request) -> JSONResponse:
         pass
     try:
         job = ORCH.start_job(
-            pid,
-            live_path,
-            protocol=protocol,
-            mode=mode,
+            pid, did, live_path,
+            protocol=protocol, mode=mode,
             extra_args=timing["extraArgs"],
             interval_sec=timing["intervalSec"],
             traffic_sec=timing["trafficSec"],
             duration_sec=timing["durationSec"],
         )
-    except TypeError:
-        # older orchestrator signature: pass extra_args only, merge fields on response
-        try:
-            job = ORCH.start_job(
-                pid, live_path, protocol=protocol, mode=mode, extra_args=timing["extraArgs"],
-            )
-            job = dict(job)
-            job["intervalSec"] = timing["intervalSec"]
-            job["trafficSec"] = timing["trafficSec"]
-            job["durationSec"] = timing["durationSec"]
-            job["extraArgs"] = list(timing["extraArgs"])
-        except RuntimeError as e:
-            if str(e) == "PROFILE_IN_USE":
-                return api_error("PROFILE_IN_USE", "profile already has a running job", 409)
-            return api_error("VALIDATION", str(e))
-        except ValueError as e:
-            return api_error("VALIDATION", str(e))
-        return JSONResponse({"ok": True, "job": job}, status_code=202)
     except RuntimeError as e:
-        if str(e) == "PROFILE_IN_USE":
-            return api_error("PROFILE_IN_USE", "profile already has a running job", 409)
-        return api_error("VALIDATION", str(e))
+        err = str(e)
+        if err in ("JOB_IN_USE", "PROFILE_IN_USE"):
+            return api_error("JOB_IN_USE", "desktop already has a running job", 409)
+        return api_error("VALIDATION", err)
     except ValueError as e:
         return api_error("VALIDATION", str(e))
     return JSONResponse({"ok": True, "job": job}, status_code=202)
@@ -1474,9 +1416,16 @@ async def profiles_stop_job(request: Request) -> JSONResponse:
     if not path.is_file():
         return api_error("NOT_FOUND", f"profile {pid} not found", 404)
     try:
-        job = ORCH.stop_job(pid)
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    did = body.get("desktopId") or request.query_params.get("desktopId") or ""
+    try:
+        job = ORCH.stop_job(pid, did)
     except KeyError:
-        return api_error("NOT_FOUND", "no job for profile", 404)
+        return api_error("NOT_FOUND", "no job for profile/desktop", 404)
     return JSONResponse({"ok": True, "job": job})
 
 
@@ -1485,10 +1434,17 @@ async def profiles_logs(request: Request) -> JSONResponse:
     path = _profile_path(pid)
     if not path.is_file():
         return api_error("NOT_FOUND", f"profile {pid} not found", 404)
-    lines = ORCH.recent_logs(profile_id=pid, limit=200)
-    # ensure redaction of any accidental secrets in lines
-    safe = [{"at": x.get("at"), "line": str(x.get("line", ""))[:2000]} for x in lines]
-    return JSONResponse({"ok": True, "profileId": pid, "lines": safe})
+    all_logs = request.query_params.get("all") == "1"
+    if all_logs:
+        by_desktop = ORCH.recent_logs(profile_id=pid, desktop_id=None, limit=500)
+    else:
+        did = request.query_params.get("desktopId") or ""
+        by_desktop = ORCH.recent_logs(profile_id=pid, desktop_id=did, limit=200)
+    safe = {
+        did: [{"at": x.get("at"), "line": str(x.get("line", ""))[:2000]} for x in lines]
+        for did, lines in by_desktop.items()
+    }
+    return JSONResponse({"ok": True, "profileId": pid, "logs": safe})
 
 
 async def profiles_logs_clear(request: Request) -> JSONResponse:
@@ -1497,106 +1453,90 @@ async def profiles_logs_clear(request: Request) -> JSONResponse:
     path = _profile_path(pid)
     if not path.is_file():
         return api_error("NOT_FOUND", f"profile {pid} not found", 404)
-    result = ORCH.clear_logs(profile_id=pid)
+    did = request.query_params.get("desktopId") or ""
+    result = ORCH.clear_logs(profile_id=pid, desktop_id=did)
     return JSONResponse(
         {
             "ok": True,
             "profileId": pid,
             "cleared": int((result or {}).get("cleared") or 0),
-            "jobId": (result or {}).get("jobId"),
             "lines": [],
         }
     )
 
 
-async def profiles_events(request: Request) -> StreamingResponse:
-    """SSE stream for a profile (and global job_status/job_log)."""
+async def profiles_desktop_jobs_get(request: Request) -> JSONResponse:
     pid = request.path_params["profile_id"]
+    did = request.path_params["desktop_id"]
     path = _profile_path(pid)
     if not path.is_file():
         return api_error("NOT_FOUND", f"profile {pid} not found", 404)
-
-    queue = ORCH.subscribe()
-
-    async def gen() -> AsyncIterator[bytes]:
-        try:
-            # initial snapshot
-            st = ORCH.get_status(pid)
-            data = json.dumps(
-                {
-                    "jobId": st.get("jobId"),
-                    "profileId": pid,
-                    "status": st.get("status"),
-                    "at": _now_iso(),
-                    "detail": "snapshot",
-                },
-                ensure_ascii=False,
-            )
-            yield f"event: job_status\ndata: {data}\n\n".encode("utf-8")
-            while True:
-                if await request.is_disconnected():
-                    break
-                try:
-                    item = await asyncio.wait_for(queue.get(), timeout=15.0)
-                except asyncio.TimeoutError:
-                    yield b": keepalive\n\n"
-                    continue
-                ev = item.get("event") or "message"
-                payload = item.get("data") or {}
-                if payload.get("profileId") and payload.get("profileId") != pid:
-                    continue
-                line = json.dumps(redact_obj(payload), ensure_ascii=False)
-                yield f"event: {ev}\ndata: {line}\n\n".encode("utf-8")
-        finally:
-            ORCH.unsubscribe(queue)
-
-    return StreamingResponse(
-        gen(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    st = ORCH.get_status(pid, did)
+    return JSONResponse({"ok": True, "job": st})
 
 
-async def events_global(request: Request) -> StreamingResponse:
-    """Global SSE stream — all job_status/job_log events (FE EventSource /api/events)."""
-    queue = ORCH.subscribe()
+async def profiles_desktop_jobs_start(request: Request) -> JSONResponse:
+    pid = request.path_params["profile_id"]
+    did = request.path_params["desktop_id"]
+    path = _profile_path(pid)
+    if not path.is_file():
+        return api_error("NOT_FOUND", f"profile {pid} not found", 404)
+    state = _read_state(path)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    mode = body.get("mode") or "live"
+    try:
+        timing = parse_job_timing_fields(body)
+    except ValueError as e:
+        return api_error("VALIDATION", str(e))
+    protocol = resolve_user_protocol(body.get("protocol"), state)
+    desktop_protos = state.get("desktopProtocols") or {}
+    if did in desktop_protos:
+        protocol = desktop_protos[did]
+    if state.get("draft"):
+        state.pop("draft", None)
+        state["updatedAt"] = _now_iso()
+        _write_state(path, state)
+    live_path = _resolve_live_state_path(path, state)
+    try:
+        _sync_shared_account(state)
+        live_path = _resolve_live_state_path(path, state)
+    except Exception:
+        pass
+    try:
+        job = ORCH.start_job(
+            pid, did, live_path,
+            protocol=protocol, mode=mode,
+            extra_args=timing["extraArgs"],
+            interval_sec=timing["intervalSec"],
+            traffic_sec=timing["trafficSec"],
+            duration_sec=timing["durationSec"],
+        )
+    except RuntimeError as e:
+        err = str(e)
+        if err in ("JOB_IN_USE", "PROFILE_IN_USE"):
+            return api_error("JOB_IN_USE", "desktop already has a running job", 409)
+        return api_error("VALIDATION", err)
+    except ValueError as e:
+        return api_error("VALIDATION", str(e))
+    return JSONResponse({"ok": True, "job": job}, status_code=202)
 
-    async def gen() -> AsyncIterator[bytes]:
-        try:
-            # initial hello so FE knows the stream is alive
-            hello = json.dumps(
-                {"status": "connected", "at": _now_iso(), "detail": "global-sse"},
-                ensure_ascii=False,
-            )
-            yield f"event: job_status\ndata: {hello}\n\n".encode("utf-8")
-            while True:
-                if await request.is_disconnected():
-                    break
-                try:
-                    item = await asyncio.wait_for(queue.get(), timeout=15.0)
-                except asyncio.TimeoutError:
-                    yield b": keepalive\n\n"
-                    continue
-                ev = item.get("event") or "message"
-                payload = item.get("data") or {}
-                line = json.dumps(redact_obj(payload), ensure_ascii=False)
-                yield f"event: {ev}\ndata: {line}\n\n".encode("utf-8")
-        finally:
-            ORCH.unsubscribe(queue)
 
-    return StreamingResponse(
-        gen(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+async def profiles_desktop_jobs_stop(request: Request) -> JSONResponse:
+    pid = request.path_params["profile_id"]
+    did = request.path_params["desktop_id"]
+    path = _profile_path(pid)
+    if not path.is_file():
+        return api_error("NOT_FOUND", f"profile {pid} not found", 404)
+    try:
+        job = ORCH.stop_job(pid, did)
+    except KeyError:
+        return api_error("NOT_FOUND", "no job for profile/desktop", 404)
+    return JSONResponse({"ok": True, "job": job})
 
 
 async def jobs_list(request: Request) -> JSONResponse:
@@ -1611,11 +1551,17 @@ async def jobs_create(request: Request) -> JSONResponse:
     pid = (body or {}).get("profileId") or (body or {}).get("profile_id")
     if not pid:
         return api_error("VALIDATION", "profileId required")
+    did = (body or {}).get("desktopId") or ""
+    if not did:
+        return api_error("VALIDATION", "desktopId required")
     path = _profile_path(str(pid))
     if not path.is_file():
         return api_error("NOT_FOUND", f"profile {pid} not found", 404)
     state = _read_state(path)
     protocol = resolve_user_protocol((body or {}).get("protocol"), state)
+    desktop_protos = state.get("desktopProtocols") or {}
+    if did in desktop_protos:
+        protocol = desktop_protos[did]
     mode = body.get("mode") or "live"
     try:
         timing = parse_job_timing_fields(body if isinstance(body, dict) else {})
@@ -1623,40 +1569,18 @@ async def jobs_create(request: Request) -> JSONResponse:
         return api_error("VALIDATION", str(e))
     try:
         job = ORCH.start_job(
-            str(pid),
-            path,
-            protocol=protocol,
-            mode=mode,
+            str(pid), did, _resolve_live_state_path(path, state),
+            protocol=protocol, mode=mode,
             extra_args=timing["extraArgs"],
             interval_sec=timing["intervalSec"],
             traffic_sec=timing["trafficSec"],
             duration_sec=timing["durationSec"],
         )
-    except TypeError:
-        try:
-            job = ORCH.start_job(
-                str(pid),
-                path,
-                protocol=protocol,
-                mode=mode,
-                extra_args=timing["extraArgs"],
-            )
-            job = dict(job)
-            job["intervalSec"] = timing["intervalSec"]
-            job["trafficSec"] = timing["trafficSec"]
-            job["durationSec"] = timing["durationSec"]
-            job["extraArgs"] = list(timing["extraArgs"])
-        except RuntimeError as e:
-            if str(e) == "PROFILE_IN_USE":
-                return api_error("PROFILE_IN_USE", "profile already has a running job", 409)
-            return api_error("VALIDATION", str(e))
-        except ValueError as e:
-            return api_error("VALIDATION", str(e))
-        return JSONResponse({"ok": True, "job": job}, status_code=202)
     except RuntimeError as e:
-        if str(e) == "PROFILE_IN_USE":
-            return api_error("PROFILE_IN_USE", "profile already has a running job", 409)
-        return api_error("VALIDATION", str(e))
+        err = str(e)
+        if err in ("JOB_IN_USE", "PROFILE_IN_USE"):
+            return api_error("JOB_IN_USE", "desktop already has a running job", 409)
+        return api_error("VALIDATION", err)
     except ValueError as e:
         return api_error("VALIDATION", str(e))
     return JSONResponse({"ok": True, "job": job}, status_code=202)
@@ -1675,62 +1599,24 @@ async def jobs_stop(request: Request) -> JSONResponse:
     job = ORCH.get_job(jid)
     if not job:
         return api_error("NOT_FOUND", f"job {jid} not found", 404)
+    pid = job.get("profileId", "")
+    did = job.get("desktopId", "")
     try:
-        stopped = ORCH.stop_job(job["profileId"])
+        stopped = ORCH.stop_job(pid, did)
     except KeyError:
         return api_error("NOT_FOUND", "job already gone", 404)
     return JSONResponse({"ok": True, "job": stopped})
 
 
-async def jobs_events(request: Request) -> StreamingResponse:
-    jid = request.path_params["job_id"]
-    job = ORCH.get_job(jid)
-    if not job:
-        return api_error("NOT_FOUND", f"job {jid} not found", 404)
-    queue = ORCH.subscribe()
-
-    async def gen() -> AsyncIterator[bytes]:
-        try:
-            data = json.dumps(
-                {
-                    "jobId": jid,
-                    "profileId": job.get("profileId"),
-                    "status": job.get("status"),
-                    "at": _now_iso(),
-                },
-                ensure_ascii=False,
-            )
-            yield f"event: job_status\ndata: {data}\n\n".encode("utf-8")
-            while True:
-                if await request.is_disconnected():
-                    break
-                try:
-                    item = await asyncio.wait_for(queue.get(), timeout=15.0)
-                except asyncio.TimeoutError:
-                    yield b": keepalive\n\n"
-                    continue
-                payload = item.get("data") or {}
-                if payload.get("jobId") and payload.get("jobId") != jid:
-                    continue
-                ev = item.get("event") or "message"
-                line = json.dumps(redact_obj(payload), ensure_ascii=False)
-                yield f"event: {ev}\ndata: {line}\n\n".encode("utf-8")
-        finally:
-            ORCH.unsubscribe(queue)
-
-    return StreamingResponse(
-        gen(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
-    )
-
-
 async def logs_global(request: Request) -> JSONResponse:
     pid = request.query_params.get("profileId")
-    jid = request.query_params.get("jobId")
-    lines = ORCH.recent_logs(job_id=jid, profile_id=pid, limit=200)
-    safe = [{"at": x.get("at"), "line": str(x.get("line", ""))[:2000]} for x in lines]
-    return JSONResponse({"ok": True, "lines": safe})
+    did = request.query_params.get("desktopId")
+    by_desktop = ORCH.recent_logs(profile_id=pid, desktop_id=did, limit=200)
+    safe = {
+        did: [{"at": x.get("at"), "line": str(x.get("line", ""))[:2000]} for x in lines]
+        for did, lines in by_desktop.items()
+    }
+    return JSONResponse({"ok": True, "logs": safe})
 
 
 async def index(request: Request) -> Response:
@@ -1772,17 +1658,16 @@ routes = [
     Route("/api/profiles/{profile_id}/select-desktop", endpoint=profiles_select_desktop, methods=["POST"]),
     Route("/api/profiles/{profile_id}/jobs", endpoint=profiles_start_job, methods=["POST"]),
     Route("/api/profiles/{profile_id}/jobs/current", endpoint=profiles_stop_job, methods=["DELETE"]),
+    # Per-desktop jobs endpoints (primary)
+    Route("/api/profiles/{profile_id}/desktops/{desktop_id}/jobs", endpoint=profiles_desktop_jobs_get, methods=["GET"]),
+    Route("/api/profiles/{profile_id}/desktops/{desktop_id}/jobs", endpoint=profiles_desktop_jobs_start, methods=["POST"]),
+    Route("/api/profiles/{profile_id}/desktops/{desktop_id}/jobs/current", endpoint=profiles_desktop_jobs_stop, methods=["DELETE"]),
     Route("/api/profiles/{profile_id}/logs", endpoint=profiles_logs, methods=["GET"]),
     Route("/api/profiles/{profile_id}/logs", endpoint=profiles_logs_clear, methods=["DELETE"]),
-    Route("/api/profiles/{profile_id}/events", endpoint=profiles_events, methods=["GET"]),
-    # Global SSE for FE EventSource("/api/events") — X7
-    Route("/api/events", endpoint=events_global, methods=["GET"]),
-    # T_PM-compatible jobs collection (poll fallback)
     Route("/api/jobs", endpoint=jobs_list, methods=["GET"]),
     Route("/api/jobs", endpoint=jobs_create, methods=["POST"]),
     Route("/api/jobs/{job_id}", endpoint=jobs_get, methods=["GET"]),
     Route("/api/jobs/{job_id}/stop", endpoint=jobs_stop, methods=["POST"]),
-    Route("/api/jobs/{job_id}/events", endpoint=jobs_events, methods=["GET"]),
     Route("/api/logs", endpoint=logs_global, methods=["GET"]),
 ]
 

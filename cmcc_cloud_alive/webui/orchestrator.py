@@ -1,15 +1,14 @@
-"""Multi-profile keepalive job orchestrator (J2).
+"""Multi-profile per-desktop keepalive job orchestrator (FNOS).
 
 Parent-process only. Does NOT run keepalive loops on the ASGI event-loop
 thread. Default backend is dry-run (FakeBackend). LIVE subprocess requires
 explicit mode=live AND env CMCC_WEBUI_ALLOW_LIVE=1 (default off).
 
-Public method names match app.FakeOrchestrator so J3 `_load_orchestrator`
-swaps in automatically.
+Composite key: "{profile_id}:{desktop_id}" — independent jobs per desktop.
+No SSE. Front-end polls for status/logs.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import signal
@@ -22,7 +21,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-__all__ = ["Orchestrator", "FakeBackend", "live_allowed"]
+__all__ = ["Orchestrator", "FakeBackend", "live_allowed", "job_key"]
+
+
+def job_key(profile_id: str, desktop_id: str) -> str:
+    return f"{profile_id}:{desktop_id}"
 
 
 def _now_iso() -> str:
@@ -30,17 +33,10 @@ def _now_iso() -> str:
 
 
 def live_allowed() -> bool:
-    """LIVE child spawn is opt-in only."""
     return os.environ.get("CMCC_WEBUI_ALLOW_LIVE", "").strip() in ("1", "true", "TRUE", "yes", "YES")
 
 
 def _data_dir() -> Path:
-    """Unified durable root shared with CLI + WebUI app (X8).
-
-    Matches ``cmcc_cloud_alive.webui.app._data_dir`` and core
-    ``DEFAULT_DATA_DIR`` (``$HOME/.cmcc-cloud-alive``; Docker HOME=/data
-    → ``/data/.cmcc-cloud-alive``).
-    """
     explicit = os.environ.get("CMCC_DATA_DIR")
     if explicit:
         p = Path(explicit)
@@ -61,7 +57,6 @@ def _jobs_dir() -> Path:
 
 
 def _redact_line(line: str) -> str:
-    """Strip obvious secret-ish tokens from log lines (never echo passwords)."""
     low = line.lower()
     for key in ("password", "passwd", "token", "secret", "authorization", "cookie"):
         if key in low:
@@ -70,27 +65,19 @@ def _redact_line(line: str) -> str:
 
 
 def _fake_short_time() -> str:
-    """Shanghai-style stamp matching core.short_time without importing CLI core."""
     try:
         from zoneinfo import ZoneInfo
-
         return datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _usid_from_state(state_path: Path) -> str:
-    """Best-effort userServiceId from profile state JSON (dry-run markers only)."""
     try:
         raw = Path(state_path).read_text(encoding="utf-8")
         data = json.loads(raw) if raw.strip() else {}
         if isinstance(data, dict):
-            usid = (
-                data.get("userServiceId")
-                or data.get("selectedUserServiceId")
-                or data.get("user_service_id")
-                or ""
-            )
+            usid = data.get("userServiceId") or data.get("selectedUserServiceId") or data.get("user_service_id") or ""
             if usid:
                 return str(usid)
     except Exception:
@@ -99,12 +86,6 @@ def _usid_from_state(state_path: Path) -> str:
 
 
 def _live_creds_from_state(state_path: Path) -> Dict[str, str]:
-    """Read username/password/usid from profile state for non-interactive live spawn.
-
-    product-keepalive interactive --non-interactive still requires argv credentials
-    (main.py raises without --password). Values stay out of orch log lines; only the
-    child argv carries them (Popen cmd is not logged).
-    """
     out: Dict[str, str] = {}
     try:
         raw = Path(state_path).read_text(encoding="utf-8")
@@ -115,12 +96,7 @@ def _live_creds_from_state(state_path: Path) -> Dict[str, str]:
         return out
     username = data.get("username") or data.get("phone") or ""
     password = data.get("password") or ""
-    usid = (
-        data.get("userServiceId")
-        or data.get("selectedUserServiceId")
-        or data.get("user_service_id")
-        or ""
-    )
+    usid = data.get("userServiceId") or data.get("selectedUserServiceId") or data.get("user_service_id") or ""
     if username:
         out["username"] = str(username)
     if password:
@@ -130,20 +106,16 @@ def _live_creds_from_state(state_path: Path) -> Dict[str, str]:
     return out
 
 
-class FakeBackend:
-    """In-process dry-run backend: OPS#497 product-keepalive lines, no network/child."""
+# ---------------------------------------------------------------------------
+# FakeBackend — unchanged
+# ---------------------------------------------------------------------------
 
+class FakeBackend:
     name = "fake"
 
-    def __init__(
-        self,
-        orch: "Orchestrator",
-        job_id: str,
-        stop_evt: threading.Event,
-        protocol: str = "ZTE",
-        traffic_sec: Optional[int] = None,
-        user_service_id: str = "dry-run-svc",
-    ) -> None:
+    def __init__(self, orch: "Orchestrator", job_id: str, stop_evt: threading.Event,
+                 protocol: str = "ZTE", traffic_sec: Optional[int] = None,
+                 user_service_id: str = "dry-run-svc") -> None:
         self.orch = orch
         self.job_id = job_id
         self.stop_evt = stop_evt
@@ -155,11 +127,7 @@ class FakeBackend:
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
-        self._thread = threading.Thread(
-            target=self._run,
-            name=f"fake-job-{self.job_id}",
-            daemon=True,
-        )
+        self._thread = threading.Thread(target=self._run, name=f"fake-job-{self.job_id}", daemon=True)
         self._thread.start()
 
     def stop(self, timeout: float = 3.0) -> None:
@@ -175,36 +143,23 @@ class FakeBackend:
         return _fake_short_time()
 
     def _emit_round(self, round_no: int) -> None:
-        """Emit one full OPS#497 product-keepalive round (CLI-shaped, no LIVE)."""
         proto = self.protocol
         kind = proto.lower()
         duration_cfg = self.traffic_sec
-        # Simulated wall time for product summary (slightly above configured duration).
         duration_done = f"{float(duration_cfg) + 0.42:.2f}"
         stage_done = f"{kind}-keepalive-done"
         usid = self.user_service_id
         if proto == "SCG":
-            hand = (
-                f"[{self._stamp()}] 第{round_no}轮SCG保活：手选SCG，调用纯Python SCG协议 "
-                f"duration={duration_cfg}s userServiceId={usid}"
-            )
-            done = (
-                f"[{self._stamp()}] 第{round_no}轮SCG保活完成 "
-                f"kind={kind} ok=True stage={stage_done} duration={duration_done}s"
-            )
+            hand = (f"[{self._stamp()}] 第{round_no}轮SCG保活：手选SCG，调用纯Python SCG协议 "
+                    f"duration={duration_cfg}s userServiceId={usid}")
+            done = (f"[{self._stamp()}] 第{round_no}轮SCG保活完成 "
+                    f"kind={kind} ok=True stage={stage_done} duration={duration_done}s")
         else:
-            hand = (
-                f"[{self._stamp()}] 第{round_no}轮ZTE保活：手选ZTE，调用长测同款CAG/mux/raw-SPICE "
-                f"duration={duration_cfg}s userServiceId={usid}"
-            )
-            done = (
-                f"[{self._stamp()}] 第{round_no}轮ZTE保活完成 "
-                f"kind={kind} ok=True stage={stage_done} duration={duration_done}s"
-            )
-        product = (
-            f"[product-keepalive] kind={kind} ok=True stage={stage_done} "
-            f"duration={duration_done}s"
-        )
+            hand = (f"[{self._stamp()}] 第{round_no}轮ZTE保活：手选ZTE，调用长测同款CAG/mux/raw-SPICE "
+                    f"duration={duration_cfg}s userServiceId={usid}")
+            done = (f"[{self._stamp()}] 第{round_no}轮ZTE保活完成 "
+                    f"kind={kind} ok=True stage={stage_done} duration={duration_done}s")
+        product = f"[product-keepalive] kind={kind} ok=True stage={stage_done} duration={duration_done}s"
         status = f"[{self._stamp()}] 云桌面状态：开机运行中"
         for line in (hand, product, done, status):
             if self.stop_evt.is_set():
@@ -212,20 +167,12 @@ class FakeBackend:
             self.orch._append_log(self.job_id, line)
 
     def _run(self) -> None:
-        # OPS#497/OPS#555 D9: full product markers; one [orch] meta only.
-        # No [dry-run] tick spam, no [live] prefix, no network.
-        self.orch._append_log(
-            self.job_id,
-            "[orch] dry-run backend=fake (no LIVE child; simulated product-keepalive lines)",
-        )
+        self.orch._append_log(self.job_id, "[orch] dry-run backend=fake (simulated product-keepalive lines)")
         script = [
             "移动云电脑保活工具",
             f"  协议：{self.protocol}",
             "[首次开机检查] 云电脑已运行，跳过开机，马上进入第一轮保活。",
-            (
-                f"进入保活循环：心跳间隔=300s 状态打印间隔=60s "
-                f"duration={self.traffic_sec}s"
-            ),
+            f"进入保活循环：心跳间隔=300s 状态打印间隔=60s duration={self.traffic_sec}s",
             "提示：当前 desktop HTTP keepalive 路由尚未被证明可独立保活，仅作状态探测。",
         ]
         for line in script:
@@ -234,43 +181,28 @@ class FakeBackend:
             self.orch._append_log(self.job_id, line)
             if self.stop_evt.wait(0.15):
                 break
-
         round_no = 0
         while not self.stop_evt.is_set():
             round_no += 1
             self._emit_round(round_no)
-            # After first full marker burst, slow down so card can scroll history.
             wait_s = 0.35 if round_no < 3 else 2.0
             if self.stop_evt.wait(wait_s):
                 break
-            # Interval status tick (CLI prints 云桌面状态 between rounds).
             if not self.stop_evt.is_set():
-                self.orch._append_log(
-                    self.job_id,
-                    f"[{self._stamp()}] 云桌面状态：开机运行中",
-                )
+                self.orch._append_log(self.job_id, f"[{self._stamp()}] 云桌面状态：开机运行中")
         self.orch._append_log(self.job_id, "[orch] dry-run backend stopped")
 
 
+# ---------------------------------------------------------------------------
+# SubprocessBackend — unchanged
+# ---------------------------------------------------------------------------
+
 class SubprocessBackend:
-    """LIVE child: python -m cmcc_cloud_alive --state <path> product-keepalive ...
-
-    Only constructed when live_allowed() and mode=live.
-    """
-
     name = "subprocess"
 
-    def __init__(
-        self,
-        orch: "Orchestrator",
-        job_id: str,
-        state_path: Path,
-        protocol: str,
-        extra_args: Optional[List[str]],
-        stop_evt: threading.Event,
-        log_path: Path,
-        lock_path: Path,
-    ) -> None:
+    def __init__(self, orch: "Orchestrator", job_id: str, state_path: Path,
+                 protocol: str, extra_args: Optional[List[str]],
+                 stop_evt: threading.Event, log_path: Path, lock_path: Path) -> None:
         self.orch = orch
         self.job_id = job_id
         self.state_path = state_path
@@ -287,30 +219,16 @@ class SubprocessBackend:
         self._acquire_lock()
         cmd = self._build_cmd()
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_f = open(self.log_path, "a", encoding="utf-8")  # noqa: SIM115 — kept open for child lifetime
+        log_f = open(self.log_path, "a", encoding="utf-8")
         try:
-            self._proc = subprocess.Popen(
-                cmd,
-                stdout=log_f,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                start_new_session=True,
-                env=self._child_env(),
-            )
+            self._proc = subprocess.Popen(cmd, stdout=log_f, stderr=subprocess.STDOUT,
+                                          stdin=subprocess.DEVNULL, start_new_session=True, env=self._child_env())
         except Exception as e:
             log_f.close()
             self._release_lock()
             raise RuntimeError(f"spawn failed: {e}") from e
-        self.orch._append_log(
-            self.job_id,
-            f"[orch] live spawned pid={self._proc.pid} protocol={self.protocol} state={self.state_path.name}",
-        )
-        self._thread = threading.Thread(
-            target=self._watch,
-            args=(log_f,),
-            name=f"live-job-{self.job_id}",
-            daemon=True,
-        )
+        self.orch._append_log(self.job_id, f"[orch] live spawned pid={self._proc.pid} protocol={self.protocol} state={self.state_path.name}")
+        self._thread = threading.Thread(target=self._watch, args=(log_f,), name=f"live-job-{self.job_id}", daemon=True)
         self._thread.start()
 
     def stop(self, timeout: float = 5.0) -> None:
@@ -345,20 +263,9 @@ class SubprocessBackend:
         return self._proc.pid if self._proc.poll() is None else self._proc.pid
 
     def _build_cmd(self) -> List[str]:
-        # Unique --state; product-keepalive interactive --non-interactive.
-        # main.py non-interactive still needs --username/--password on argv (not
-        # sole of this module). Prefer profile state JSON; never log those values.
-        # Protocol selection is state/route driven; we only hint via env.
         creds = _live_creds_from_state(self.state_path)
-        cmd = [
-            sys.executable,
-            "-m",
-            "cmcc_cloud_alive",
-            "--state",
-            str(self.state_path),
-            "product-keepalive",
-            "interactive",
-        ]
+        cmd = [sys.executable, "-m", "cmcc_cloud_alive", "--state", str(self.state_path),
+               "product-keepalive", "interactive"]
         usid = creds.get("user_service_id")
         if usid:
             cmd.append(usid)
@@ -374,16 +281,11 @@ class SubprocessBackend:
         env = dict(os.environ)
         env["CMCC_ORCH_JOB_ID"] = self.job_id
         env["CMCC_ORCH_PROTOCOL"] = self.protocol
-        # Container/host must not send SPICE/SCG via HTTP(S) proxy (user hard rule).
-        for k in (
-            "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
-            "all_proxy", "ALL_PROXY", "ftp_proxy", "FTP_PROXY",
-        ):
+        for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+                   "all_proxy", "ALL_PROXY", "ftp_proxy", "FTP_PROXY"):
             env.pop(k, None)
-        # Prefer direct for all destinations when a proxy-capable stack is present.
         env["NO_PROXY"] = "*"
         env["no_proxy"] = "*"
-        # Ensure child does not inherit a webui token requirement that confuses CLI
         return env
 
     def _acquire_lock(self) -> None:
@@ -391,11 +293,10 @@ class SubprocessBackend:
         fd = os.open(str(self.lock_path), os.O_CREAT | os.O_RDWR, 0o600)
         try:
             import fcntl
-
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except Exception as e:
             os.close(fd)
-            raise RuntimeError(f"PROFILE_LOCK: {e}") from e
+            raise RuntimeError(f"LOCK_FAILED: {e}") from e
         os.ftruncate(fd, 0)
         os.write(fd, f"{os.getpid()}\n".encode("ascii"))
         self._lock_fd = fd
@@ -407,7 +308,6 @@ class SubprocessBackend:
             return
         try:
             import fcntl
-
             fcntl.flock(fd, fcntl.LOCK_UN)
         except Exception:
             pass
@@ -422,16 +322,10 @@ class SubprocessBackend:
             pass
 
     def _watch(self, log_f: Any) -> None:
-        """Incremental tail of child stdout file → ring buffer as Python-raw lines.
-
-        Card UI dumps `x.line` only. Do NOT prefix child lines with `[live]`;
-        multi-line bursts must all pass through (not last-line-only).
-        """
         proc = self._proc
         offset = 0
         pending = ""
         try:
-            # Start at EOF so we only stream post-spawn output (spawn meta is [orch]).
             try:
                 if self.log_path.is_file():
                     offset = self.log_path.stat().st_size
@@ -444,7 +338,6 @@ class SubprocessBackend:
                     pass
                 if self.stop_evt.wait(0.5):
                     break
-            # Final drain after child exit / stop
             try:
                 offset, pending = self._drain_log(offset, pending, final=True)
             except Exception:
@@ -454,12 +347,7 @@ class SubprocessBackend:
                 self.orch._mark_stopped(self.job_id, detail="stopped by API", exit_code=rc)
             else:
                 status = "stopped" if rc == 0 else "error"
-                self.orch._mark_stopped(
-                    self.job_id,
-                    detail=f"child exited rc={rc}",
-                    exit_code=rc,
-                    status=status,
-                )
+                self.orch._mark_stopped(self.job_id, detail=f"child exited rc={rc}", exit_code=rc, status=status)
         finally:
             try:
                 log_f.close()
@@ -468,7 +356,6 @@ class SubprocessBackend:
             self._release_lock()
 
     def _drain_log(self, offset: int, pending: str, *, final: bool = False) -> tuple:
-        """Read new bytes from log_path; append complete lines as raw (redacted) text."""
         if not self.log_path.is_file():
             return offset, pending
         with open(self.log_path, "r", encoding="utf-8", errors="replace") as rf:
@@ -490,7 +377,6 @@ class SubprocessBackend:
             line = raw.rstrip("\r\n")
             if line == "":
                 continue
-            # Raw child stdout only — _append_log already redacts secrets.
             self.orch._append_log(self.job_id, line)
         if final and pending.strip():
             self.orch._append_log(self.job_id, pending.rstrip("\r\n"))
@@ -498,20 +384,15 @@ class SubprocessBackend:
         return offset, pending
 
 
-class SimpleAliveBackend:
-    """V3 CAG TCP/TLS keepalive via simple-alive subprocess (proper lifecycle)."""
+# ---------------------------------------------------------------------------
+# SimpleAliveBackend — unchanged
+# ---------------------------------------------------------------------------
 
+class SimpleAliveBackend:
     name = "subprocess-v3"
 
-    def __init__(
-        self,
-        orch: "Orchestrator",
-        job_id: str,
-        state_path: Path,
-        extra_args: Optional[List[str]],
-        stop_evt: threading.Event,
-        log_path: Path,
-    ) -> None:
+    def __init__(self, orch: "Orchestrator", job_id: str, state_path: Path,
+                 extra_args: Optional[List[str]], stop_evt: threading.Event, log_path: Path) -> None:
         self.orch = orch
         self.job_id = job_id
         self.state_path = state_path
@@ -526,26 +407,13 @@ class SimpleAliveBackend:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         log_f = open(self.log_path, "a", encoding="utf-8")
         try:
-            self._proc = subprocess.Popen(
-                cmd,
-                stdout=log_f,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                start_new_session=True,
-            )
+            self._proc = subprocess.Popen(cmd, stdout=log_f, stderr=subprocess.STDOUT,
+                                          stdin=subprocess.DEVNULL, start_new_session=True)
         except Exception as e:
             log_f.close()
             raise RuntimeError(f"V3 spawn failed: {e}") from e
-        self.orch._append_log(
-            self.job_id,
-            f"[orch] V3 spawned pid={self._proc.pid} state={self.state_path.name}",
-        )
-        self._thread = threading.Thread(
-            target=self._watch,
-            args=(log_f,),
-            name=f"v3-job-{self.job_id}",
-            daemon=True,
-        )
+        self.orch._append_log(self.job_id, f"[orch] V3 spawned pid={self._proc.pid} state={self.state_path.name}")
+        self._thread = threading.Thread(target=self._watch, args=(log_f,), name=f"v3-job-{self.job_id}", daemon=True)
         self._thread.start()
 
     def stop(self, timeout: float = 5.0) -> None:
@@ -580,11 +448,7 @@ class SimpleAliveBackend:
 
     def _build_cmd(self) -> List[str]:
         creds = _live_creds_from_state(self.state_path)
-        cmd = [
-            sys.executable, "-m", "cmcc_cloud_alive",
-            "--state", str(self.state_path),
-            "simple-alive",
-        ]
+        cmd = [sys.executable, "-m", "cmcc_cloud_alive", "--state", str(self.state_path), "simple-alive"]
         usid = creds.get("user_service_id")
         if usid:
             cmd.append(usid)
@@ -628,12 +492,7 @@ class SimpleAliveBackend:
                 self.orch._mark_stopped(self.job_id, detail="stopped by API", exit_code=rc)
             else:
                 status = "stopped" if rc == 0 else "error"
-                self.orch._mark_stopped(
-                    self.job_id,
-                    detail=f"V3 child exited rc={rc}",
-                    exit_code=rc,
-                    status=status,
-                )
+                self.orch._mark_stopped(self.job_id, detail=f"V3 child exited rc={rc}", exit_code=rc, status=status)
         finally:
             try:
                 log_f.close()
@@ -669,49 +528,25 @@ class SimpleAliveBackend:
         return offset, pending
 
 
+# ---------------------------------------------------------------------------
+# Orchestrator — composite key, no SSE
+# ---------------------------------------------------------------------------
+
 class Orchestrator:
-    """In-memory job table + per-profile mutex + dry-run/LIVE backends."""
+    """In-memory job table + per-(profile,desktop) mutex + dry-run/LIVE backends.
+
+    Each desktop within a profile gets an independent job identified by
+    composite key ``"{profile_id}:{desktop_id}"``.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._jobs: Dict[str, Dict[str, Any]] = {}
-        self._by_profile: Dict[str, str] = {}
-        self._log_buffers: Dict[str, List[Dict[str, str]]] = {}
+        self._jobs: Dict[str, Dict[str, Any]] = {}           # job_id -> job dict
+        self._by_key: Dict[str, str] = {}                    # composite_key -> job_id
+        self._log_buffers: Dict[str, List[Dict[str, str]]] = {}  # job_id -> [{at, line}]
         self._last_log_line: Dict[str, str] = {}
-        self._subscribers: List[asyncio.Queue] = []
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._backends: Dict[str, Any] = {}  # job_id -> backend
+        self._backends: Dict[str, Any] = {}                  # job_id -> backend
         self._stop_events: Dict[str, threading.Event] = {}
-
-    # ------------------------------------------------------------------
-    # SSE / loop
-    # ------------------------------------------------------------------
-
-    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
-        self._loop = loop
-
-    def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue(maxsize=256)
-        with self._lock:
-            self._subscribers.append(q)
-        return q
-
-    def unsubscribe(self, q: asyncio.Queue) -> None:
-        with self._lock:
-            try:
-                self._subscribers.remove(q)
-            except ValueError:
-                pass
-
-    def _emit(self, event: str, data: Dict[str, Any]) -> None:
-        payload = {"event": event, "data": data}
-        with self._lock:
-            subs = list(self._subscribers)
-        for q in subs:
-            try:
-                q.put_nowait(payload)
-            except asyncio.QueueFull:
-                pass
 
     # ------------------------------------------------------------------
     # Query
@@ -721,109 +556,100 @@ class Orchestrator:
         with self._lock:
             return [dict(j) for j in self._jobs.values()]
 
-    def get_status(self, profile_id: str) -> Dict[str, Any]:
+    def get_status(self, profile_id: str, desktop_id: str) -> Dict[str, Any]:
+        key = job_key(profile_id, desktop_id)
         with self._lock:
-            jid = self._by_profile.get(profile_id)
+            jid = self._by_key.get(key)
             if not jid:
-                return {"profileId": profile_id, "status": "idle", "jobId": None}
+                return {"profileId": profile_id, "desktopId": desktop_id, "status": "idle", "jobId": None}
             j = self._jobs.get(jid) or {}
-            return {
-                "profileId": profile_id,
-                "status": j.get("status", "unknown"),
-                "jobId": jid,
-                "protocol": j.get("protocol"),
-                "pid": j.get("pid"),
-                "startedAt": j.get("startedAt"),
-            }
+            return {"profileId": profile_id, "desktopId": desktop_id, "jobId": jid,
+                    "status": j.get("status", "unknown"), "protocol": j.get("protocol"),
+                    "pid": j.get("pid"), "startedAt": j.get("startedAt")}
+
+    def get_statuses(self, profile_id: str) -> List[Dict[str, Any]]:
+        """Return status for every desktop in this profile (idle for unstarted)."""
+        out = []
+        with self._lock:
+            prefix = profile_id + ":"
+            for key, jid in self._by_key.items():
+                if not key.startswith(prefix):
+                    continue
+                did = key[len(prefix):]
+                j = self._jobs.get(jid) or {}
+                out.append({"profileId": profile_id, "desktopId": did, "jobId": jid,
+                            "status": j.get("status", "idle"), "protocol": j.get("protocol"),
+                            "pid": j.get("pid"), "startedAt": j.get("startedAt")})
+        return out
 
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
             j = self._jobs.get(job_id)
             return dict(j) if j else None
 
-    def recent_logs(
-        self,
-        job_id: Optional[str] = None,
-        profile_id: Optional[str] = None,
-        limit: int = 100,
-    ) -> List[Dict[str, str]]:
-        """Return job/card logs only when scoped.
+    def recent_logs(self, profile_id: str, desktop_id: Optional[str] = None,
+                    limit: int = 200) -> Dict[str, List[Dict[str, str]]]:
+        """Return logs keyed by desktop_id.
 
-        HARD_GATE#768-B / ASSIGN#785#4: unscoped /api/logs must not flatten
-        job buffers into page-level global log. Card logs stay profile/job scoped
-        via /api/profiles/{id}/logs or ?profileId=/jobId=.
+        If desktop_id is given, returns only that desktop's logs.
+        If None (batch), returns all desktops' logs for this profile.
         """
         with self._lock:
-            if not job_id and profile_id:
-                job_id = self._by_profile.get(profile_id)
-            if not job_id:
-                return []
-            return list(self._log_buffers.get(job_id, []))[-limit:]
+            prefix = profile_id + ":"
+            result: Dict[str, List[Dict[str, str]]] = {}
+            for key, jid in self._by_key.items():
+                if not key.startswith(prefix):
+                    continue
+                did = key[len(prefix):]
+                if desktop_id and did != desktop_id:
+                    continue
+                buf = self._log_buffers.get(jid, [])
+                result[did] = list(buf)[-limit:]
+            return result
 
     # ------------------------------------------------------------------
     # Start / stop
     # ------------------------------------------------------------------
 
-    def start_job(
-        self,
-        profile_id: str,
-        state_path: Path,
-        protocol: str = "ZTE",
-        extra_args: Optional[List[str]] = None,
-        mode: str = "dry-run",
-        interval_sec: Optional[int] = None,
-        traffic_sec: Optional[int] = None,
-        duration_sec: Optional[int] = None,
-    ) -> Dict[str, Any]:
+    def start_job(self, profile_id: str, desktop_id: str, state_path: Path,
+                  protocol: str = "ZTE", extra_args: Optional[List[str]] = None,
+                  mode: str = "dry-run", interval_sec: Optional[int] = None,
+                  traffic_sec: Optional[int] = None,
+                  duration_sec: Optional[int] = None) -> Dict[str, Any]:
         protocol = (protocol or "ZTE").upper()
         if protocol == "V3":
-            return self._start_job_v3(profile_id, state_path, protocol, extra_args, mode, interval_sec, traffic_sec, duration_sec)
+            return self._start_job_v3(profile_id, desktop_id, state_path, extra_args, mode,
+                                       interval_sec, traffic_sec, duration_sec)
         if protocol not in ("ZTE", "SCG"):
-            raise ValueError("protocol must be ZTE or SCG")
+            raise ValueError("protocol must be ZTE, SCG, or V3")
         mode = (mode or "dry-run").lower()
         if mode in ("live", "prod", "production"):
             if not live_allowed():
-                # Fail closed: refuse LIVE without explicit env switch
-                raise RuntimeError(
-                    "LIVE_DISABLED: set CMCC_WEBUI_ALLOW_LIVE=1 and mode=live to spawn child"
-                )
+                raise RuntimeError("LIVE_DISABLED: set CMCC_WEBUI_ALLOW_LIVE=1 and mode=live to spawn child")
             mode = "live"
         else:
             mode = "dry-run"
 
         state_path = Path(state_path)
+        key = job_key(profile_id, desktop_id)
         with self._lock:
-            existing = self._by_profile.get(profile_id)
+            existing = self._by_key.get(key)
             if existing and self._jobs.get(existing, {}).get("status") == "running":
-                raise RuntimeError("PROFILE_IN_USE")
+                raise RuntimeError("JOB_IN_USE")
 
-            old_jid = self._by_profile.get(profile_id)
+            old_jid = self._by_key.get(key)
             job_id = uuid.uuid4().hex[:12]
-            job = {
-                "id": job_id,
-                "jobId": job_id,
-                "profileId": profile_id,
-                "statePath": str(state_path),
-                "protocol": protocol,
-                "mode": mode,
-                "status": "running",
-                "pid": None,
-                "startedAt": _now_iso(),
-                "stoppedAt": None,
-                "detail": (
-                    "dry-run FakeBackend (no LIVE child)"
-                    if mode == "dry-run"
-                    else "live subprocess pending"
-                ),
-                "extraArgs": list(extra_args or []),
-                "intervalSec": interval_sec,
-                "trafficSec": traffic_sec,
-                "durationSec": duration_sec,
-                "backend": "fake" if mode == "dry-run" else "subprocess",
-                "exitCode": None,
+            job: Dict[str, Any] = {
+                "id": job_id, "jobId": job_id, "profileId": profile_id, "desktopId": desktop_id,
+                "statePath": str(state_path), "protocol": protocol, "mode": mode,
+                "status": "running", "pid": None, "startedAt": _now_iso(), "stoppedAt": None,
+                "detail": "dry-run FakeBackend (no LIVE child)" if mode == "dry-run" else "live subprocess pending",
+                "extraArgs": list(extra_args or []), "intervalSec": interval_sec,
+                "trafficSec": traffic_sec, "durationSec": duration_sec,
+                "backend": "fake" if mode == "dry-run" else "subprocess", "exitCode": None,
             }
             self._jobs[job_id] = job
-            self._by_profile[profile_id] = job_id
+            self._by_key[key] = job_id
             self._log_buffers.setdefault(job_id, [])
             if old_jid and old_jid != job_id:
                 old_logs = self._log_buffers.get(old_jid, [])
@@ -832,32 +658,19 @@ class Orchestrator:
             stop_evt = threading.Event()
             self._stop_events[job_id] = stop_evt
 
-        # start backend outside lock (may block on flock for LIVE)
         try:
             if mode == "dry-run":
-                backend = FakeBackend(
-                    self,
-                    job_id,
-                    stop_evt,
-                    protocol=protocol,
-                    traffic_sec=traffic_sec,
-                    user_service_id=_usid_from_state(state_path),
-                )
+                backend = FakeBackend(self, job_id, stop_evt, protocol=protocol,
+                                       traffic_sec=traffic_sec,
+                                       user_service_id=_usid_from_state(state_path))
             else:
                 jdir = _jobs_dir() / job_id
                 jdir.mkdir(parents=True, exist_ok=True)
                 log_path = jdir / "worker.log"
-                lock_path = _data_dir() / "locks" / f"{profile_id}.lock"
-                backend = SubprocessBackend(
-                    self,
-                    job_id,
-                    state_path=state_path,
-                    protocol=protocol,
-                    extra_args=extra_args,
-                    stop_evt=stop_evt,
-                    log_path=log_path,
-                    lock_path=lock_path,
-                )
+                lock_path = _data_dir() / "locks" / f"{profile_id}_{desktop_id}.lock"
+                backend = SubprocessBackend(self, job_id, state_path=state_path, protocol=protocol,
+                                            extra_args=extra_args, stop_evt=stop_evt,
+                                            log_path=log_path, lock_path=lock_path)
             backend.start()
             with self._lock:
                 self._backends[job_id] = backend
@@ -870,45 +683,22 @@ class Orchestrator:
             with self._lock:
                 j = self._jobs.get(job_id)
                 if j:
-                    j["status"] = "error"
-                    j["stoppedAt"] = _now_iso()
+                    j["status"] = "error"; j["stoppedAt"] = _now_iso()
                     j["detail"] = f"start failed: {e}"
                 self._stop_events.pop(job_id, None)
             self._append_log(job_id, f"[orch] start failed: {e}")
-            self._emit(
-                "job_status",
-                {
-                    "jobId": job_id,
-                    "profileId": profile_id,
-                    "status": "error",
-                    "at": _now_iso(),
-                    "detail": str(e),
-                },
-            )
             raise
 
-        self._append_log(
-            job_id,
-            f"[orch] start protocol={protocol} mode={mode} state={state_path.name}",
-        )
-        self._emit(
-            "job_status",
-            {
-                "jobId": job_id,
-                "profileId": profile_id,
-                "status": "running",
-                "at": job_out["startedAt"],
-                "detail": job_out["detail"],
-            },
-        )
+        self._append_log(job_id, f"[orch] start protocol={protocol} mode={mode} desktop={desktop_id}")
         return job_out
 
-    def _start_job_v3(self, profile_id, state_path, protocol, extra_args, mode, interval_sec, traffic_sec, duration_sec):
-        """V3 CAG TCP/TLS keepalive via SimpleAliveBackend (proper lifecycle + logs)."""
+    def _start_job_v3(self, profile_id: str, desktop_id: str, state_path: Path,
+                      extra_args, mode, interval_sec, traffic_sec, duration_sec):
         sp = Path(state_path) if not isinstance(state_path, Path) else state_path
+        key = job_key(profile_id, desktop_id)
         job_id = uuid.uuid4().hex[:12]
-        job = {
-            "id": job_id, "jobId": job_id, "profileId": profile_id,
+        job: Dict[str, Any] = {
+            "id": job_id, "jobId": job_id, "profileId": profile_id, "desktopId": desktop_id,
             "statePath": str(sp), "protocol": "V3", "mode": mode or "live",
             "status": "running", "pid": None, "startedAt": _now_iso(), "stoppedAt": None,
             "detail": "V3 keepalive starting", "extraArgs": list(extra_args or []),
@@ -916,12 +706,12 @@ class Orchestrator:
             "backend": "subprocess-v3", "exitCode": None,
         }
         with self._lock:
-            existing = self._by_profile.get(profile_id)
+            existing = self._by_key.get(key)
             if existing and self._jobs.get(existing, {}).get("status") == "running":
-                raise RuntimeError("PROFILE_IN_USE")
-            old_jid = self._by_profile.get(profile_id)
+                raise RuntimeError("JOB_IN_USE")
+            old_jid = self._by_key.get(key)
             self._jobs[job_id] = job
-            self._by_profile[profile_id] = job_id
+            self._by_key[key] = job_id
             self._log_buffers.setdefault(job_id, [])
             if old_jid and old_jid != job_id:
                 old_logs = self._log_buffers.get(old_jid, [])
@@ -932,37 +722,32 @@ class Orchestrator:
         jdir = _jobs_dir() / job_id
         jdir.mkdir(parents=True, exist_ok=True)
         log_path = jdir / "worker.log"
-        backend = SimpleAliveBackend(
-            self, job_id, state_path=sp, extra_args=extra_args,
-            stop_evt=stop_evt, log_path=log_path,
-        )
+        backend = SimpleAliveBackend(self, job_id, state_path=sp, extra_args=extra_args,
+                                      stop_evt=stop_evt, log_path=log_path)
         try:
             backend.start()
             with self._lock:
                 self._backends[job_id] = backend
                 pid = backend.pid()
                 if pid is not None:
-                    job["pid"] = pid
-                    job["detail"] = f"V3 subprocess pid={pid}"
+                    job["pid"] = pid; job["detail"] = f"V3 subprocess pid={pid}"
                 job_out = dict(self._jobs[job_id])
         except Exception as e:
             with self._lock:
                 j = self._jobs.get(job_id)
                 if j:
-                    j["status"] = "error"
-                    j["stoppedAt"] = _now_iso()
+                    j["status"] = "error"; j["stoppedAt"] = _now_iso()
                     j["detail"] = f"V3 start failed: {e}"
                 self._stop_events.pop(job_id, None)
             self._append_log(job_id, f"[orch] V3 start failed: {e}")
-            self._emit("job_status", {"jobId": job_id, "profileId": profile_id, "status": "error", "detail": str(e)})
             raise
-        self._append_log(job_id, f"[orch] V3 started protocol=V3 mode={mode} state={sp.name}")
-        self._emit("job_status", {"jobId": job_id, "profileId": profile_id, "status": "running", "at": job_out["startedAt"]})
+        self._append_log(job_id, f"[orch] V3 started desktop={desktop_id}")
         return job_out
 
-    def stop_job(self, profile_id: str) -> Dict[str, Any]:
+    def stop_job(self, profile_id: str, desktop_id: str) -> Dict[str, Any]:
+        key = job_key(profile_id, desktop_id)
         with self._lock:
-            jid = self._by_profile.get(profile_id)
+            jid = self._by_key.get(key)
             if not jid or jid not in self._jobs:
                 raise KeyError("NOT_FOUND")
             job = self._jobs[jid]
@@ -970,7 +755,6 @@ class Orchestrator:
                 return dict(job)
             backend = self._backends.get(jid)
             stop_evt = self._stop_events.get(jid)
-
         if stop_evt is not None:
             stop_evt.set()
         if backend is not None:
@@ -978,8 +762,21 @@ class Orchestrator:
                 backend.stop()
             except Exception as e:
                 self._append_log(jid, f"[orch] stop error: {e}")
-
         return self._mark_stopped(jid, detail="stopped by API")
+
+    def stop_all(self, profile_id: str) -> List[Dict[str, Any]]:
+        """Stop all running desktop jobs for a profile."""
+        results = []
+        with self._lock:
+            prefix = profile_id + ":"
+            keys = [k for k in self._by_key if k.startswith(prefix)]
+        for key in keys:
+            did = key[len(profile_id) + 1:]
+            try:
+                results.append(self.stop_job(profile_id, did))
+            except KeyError:
+                pass
+        return results
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -993,25 +790,12 @@ class Orchestrator:
                 return
             self._last_log_line[job_id] = safe
             buf = self._log_buffers.setdefault(job_id, [])
-            entry = {"at": at, "line": safe}
-            buf.append(entry)
-            # cap buffer
+            buf.append({"at": at, "line": safe})
             if len(buf) > 500:
-                del buf[: len(buf) - 500]
-            profile_id = (self._jobs.get(job_id) or {}).get("profileId")
-        self._emit(
-            "job_log",
-            {"jobId": job_id, "profileId": profile_id, "at": at, "line": safe},
-        )
+                del buf[:len(buf) - 500]
 
-    def _mark_stopped(
-        self,
-        job_id: str,
-        *,
-        detail: str,
-        exit_code: Optional[int] = None,
-        status: str = "stopped",
-    ) -> Dict[str, Any]:
+    def _mark_stopped(self, job_id: str, *, detail: str, exit_code: Optional[int] = None,
+                      status: str = "stopped") -> Dict[str, Any]:
         with self._lock:
             job = self._jobs.get(job_id)
             if not job:
@@ -1023,19 +807,8 @@ class Orchestrator:
             job["detail"] = detail
             if exit_code is not None:
                 job["exitCode"] = exit_code
-            profile_id = job.get("profileId")
             out = dict(job)
             self._backends.pop(job_id, None)
             self._stop_events.pop(job_id, None)
         self._append_log(job_id, f"[orch] {detail}")
-        self._emit(
-            "job_status",
-            {
-                "jobId": job_id,
-                "profileId": profile_id,
-                "status": status,
-                "at": out["stoppedAt"],
-                "detail": detail,
-            },
-        )
         return out

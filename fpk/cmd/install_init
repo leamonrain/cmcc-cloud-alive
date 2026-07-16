@@ -1,0 +1,5 @@
+#!/bin/bash
+# Pre-installation tasks (runs before files are extracted)
+set -e
+echo "Preparing $TRIM_APPNAME $TRIM_APPVER installation..." > "$TRIM_TEMP_LOGFILE"
+exit 0

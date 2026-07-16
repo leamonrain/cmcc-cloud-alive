@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>云电脑保活管理</title>
+<link rel="icon" type="image/png" href="/static/logo.png" />
+<link rel="stylesheet" href="/static/app.css?v=901" />
+</head>
+<body>
+<div class="container">
+  <div class="topbar">
+    <div class="brand">
+      <h1>🖥️ 云电脑保活管理</h1>
+    </div>
+    <div class="stats-bar" id="top-stats">
+      <span class="stat-pill" data-k="total">账号 0</span>
+      <span class="stat-pill" data-k="running">运行 0</span>
+      <span class="stat-pill" data-k="idle">空闲 0</span>
+      <span class="stat-pill" data-k="error">异常 0</span>
+    </div>
+    <div class="top-actions">
+      <div class="token-row" id="token-row" hidden>
+        <input type="text" id="token-input" placeholder="令牌" />
+        <button class="btn btn-sm btn-outline" id="btn-token">设置</button>
+        <button class="btn btn-sm btn-outline" id="btn-clear-token">清除</button>
+      </div>
+      <button class="btn btn-sm btn-outline" id="btn-refresh">🔄</button>
+      <button class="btn btn-sm btn-outline" id="btn-help">?</button>
+    </div>
+  </div>
+
+  <div class="tab-bar">
+    <div class="tab-item active" data-tab="accounts">账号管理</div>
+    <div class="tab-item" data-tab="status">运行状态</div>
+    <div class="tab-item" data-tab="logs">日志</div>
+  </div>
+
+  <!-- Tab: Accounts -->
+  <div class="tab-panel active" id="tab-accounts">
+    <div id="account-grid"></div>
+    <button class="btn btn-primary" id="btn-add-account" style="width:100%;justify-content:center;padding:12px;font-size:15px">➕ 添加账号</button>
+  </div>
+
+  <!-- Tab: Status -->
+  <div class="tab-panel" id="tab-status">
+    <div id="keepalive-grid"></div>
+  </div>
+
+  <!-- Tab: Logs -->
+  <div class="tab-panel" id="tab-logs">
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <button class="btn btn-sm btn-outline" id="btn-clear-log">🗑 清空</button>
+    </div>
+    <div class="log-box" id="global-log">等待日志...</div>
+    <p class="sys-info" id="sys-info"></p>
+  </div>
+</div>
+
+<!-- Login Modal -->
+<div class="modal-overlay hidden" id="login-modal">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="login-modal-title">添加账号</h2>
+      <span class="modal-x" id="login-modal-close">✕</span>
+    </div>
+    <div class="modal-body" id="login-modal-body"></div>
+  </div>
+</div>
+
+<!-- Config Modal -->
+<div class="modal-overlay hidden" id="config-modal">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="config-modal-title">配置</h2>
+      <span class="modal-x" id="config-modal-close">✕</span>
+    </div>
+    <div class="modal-body" id="config-modal-body"></div>
+  </div>
+</div>
+
+<!-- Confirm Modal -->
+<div class="modal-overlay hidden" id="modal">
+  <div class="modal" style="max-width:360px">
+    <h2 id="modal-title">确认</h2>
+    <p class="confirm-text" id="modal-body">确定？</p>
+    <div class="modal-actions">
+      <button class="btn btn-outline" id="modal-cancel">取消</button>
+      <button class="btn btn-danger" id="modal-ok">确定删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- Help Modal -->
+<div class="modal-overlay hidden" id="help-modal">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-head">
+      <h2>使用说明</h2>
+      <span class="modal-x" onclick="document.getElementById('help-modal').classList.add('hidden')">✕</span>
+    </div>
+    <div class="help-body">
+      <p>在同一页完成账号配置与保活控制。</p>
+      <ul>
+        <li><b>账号管理</b>：添加账号→登录→勾选需要保活的云电脑</li>
+        <li><b>运行状态</b>：每台云电脑独立启动/停止保活</li>
+        <li><b>日志</b>：每台云电脑独立日志，每5秒自动刷新</li>
+      </ul>
+      <p>关掉浏览器页面后，已启动的保活仍在后台运行。</p>
+    </div>
+    <div class="modal-actions" style="margin-top:12px">
+      <button class="btn btn-primary" id="help-close">知道了</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast hidden" id="toast"></div>
+<script src="/static/app.js?v=901"></script>
+</body>
+</html>

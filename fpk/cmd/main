@@ -1,0 +1,50 @@
+#!/bin/bash
+set -e
+PATH="/var/apps/python312/target/bin:$TRIM_APPDEST/src/.venv/bin:/usr/local/bin:$PATH"
+PORT="${TRIM_SERVICE_PORT:-18080}"
+PIDFILE="$TRIM_PKGVAR/uvicorn.pid"
+
+case "$1" in
+  start)
+    echo "Starting $TRIM_APPNAME $TRIM_APPVER" > "$TRIM_TEMP_LOGFILE"
+    cd "$TRIM_APPDEST/src"
+    if [ ! -f "$PIDFILE" ] || ! kill -0 $(cat "$PIDFILE") 2>/dev/null; then
+      nohup uvicorn webui.app:app \
+        --host 127.0.0.1 --port "$PORT" \
+        --workers 1 --log-level info \
+        --pidfile "$PIDFILE" \
+        > "$TRIM_PKGVAR/uvicorn.log" 2>&1 &
+      echo $! > "$PIDFILE"
+      echo "Started uvicorn (PID $(cat $PIDFILE))"
+    else
+      echo "Already running (PID $(cat $PIDFILE))"
+    fi
+    ;;
+  stop)
+    echo "Stopping $TRIM_APPNAME" > "$TRIM_TEMP_LOGFILE"
+    if [ -f "$PIDFILE" ]; then
+      kill $(cat "$PIDFILE") 2>/dev/null || true
+      rm -f "$PIDFILE"
+      echo "Stopped"
+    fi
+    ;;
+  status)
+    if [ -f "$PIDFILE" ] && kill -0 $(cat "$PIDFILE") 2>/dev/null; then
+      echo "Running (PID $(cat $PIDFILE))"
+      exit 0
+    fi
+    echo "Not running"
+    exit 3
+    ;;
+  reload)
+    echo "Reloading $TRIM_APPNAME" > "$TRIM_TEMP_LOGFILE"
+    if [ -f "$PIDFILE" ] && kill -0 $(cat "$PIDFILE") 2>/dev/null; then
+      kill -HUP $(cat "$PIDFILE") 2>/dev/null || true
+      echo "Reloaded"
+    fi
+    ;;
+  *)
+    echo "Unknown command: $1" > "$TRIM_TEMP_LOGFILE"
+    exit 1
+    ;;
+esac

@@ -46,16 +46,16 @@ h1{font-size:22px;margin-bottom:16px;color:#1a1a2e;display:flex;align-items:cent
 
 /* PC List in Card */
 .pc-list{}
-.pc-row{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid #f0f0f0}
+.pc-row{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid #f0f0f0;flex-wrap:wrap}
 .pc-row:last-child{border-bottom:none}
 .pc-row.checked{background:#f0f4ff}
-.pc-cb{display:flex;align-items:center;cursor:pointer}
+.pc-cb{display:flex;align-items:center;cursor:pointer;flex-shrink:0}
 .pc-cb input[type=checkbox]{width:18px;height:18px;accent-color:#4361ee;cursor:pointer}
-.pc-name{font-size:14px;flex:1;color:#333}
+.pc-name{font-size:14px;flex:1 1 auto;min-width:60px;color:#333}
 .pc-pwr{font-size:11px;padding:2px 8px;border-radius:10px;font-weight:500;flex-shrink:0}
 .pc-pwr.pwr-on{background:#e6f9f0;color:#06d6a0}
 .pc-pwr.pwr-off{background:#f0f0f0;color:#999}
-.pc-proto{display:flex;gap:2px;flex-shrink:0}
+.pc-proto{display:flex;gap:2px;flex-shrink:0;flex-wrap:wrap}
 .proto-btn{padding:3px 8px;font-size:11px;border-radius:4px;cursor:pointer;background:#f0f0f0;color:#999;transition:all .15s;user-select:none}
 .proto-btn.on{background:#4361ee;color:#fff}
 .proto-btn:hover:not(.on){background:#e0e0e0}
@@ -94,6 +94,11 @@ h1{font-size:22px;margin-bottom:16px;color:#1a1a2e;display:flex;align-items:cent
 .sl-actions{display:flex;gap:4px;justify-content:flex-end;margin-top:4px}
 .status-actions{display:flex;gap:6px}
 .status-actions .btn{min-height:28px;height:28px;font-size:12px;padding:0 10px}
+.status-item .sl-wrap{padding:6px 12px;border-top:1px solid #eee}
+.status-item .sl-wrap .sl{font-size:11px;color:#666;max-height:48px;overflow-y:auto;background:#f9f9f9;border-radius:6px;padding:4px 8px;font-family:monospace;line-height:1.5;margin-bottom:4px;border:1px solid #eee}
+.status-item .sl-wrap .sl .ll{display:block;padding:1px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.status-item .sl-wrap .sl .ll.error span{color:#ef476f}
+.status-item .sl-wrap .sl-actions{display:flex;gap:4px;justify-content:flex-end}
 
 /* Log Page */
 .log-box{background:#1a1a2e;color:#0f0;padding:12px;border-radius:8px;font-family:monospace;font-size:12px;max-height:600px;overflow-y:auto}
@@ -123,15 +128,11 @@ h1{font-size:22px;margin-bottom:16px;color:#1a1a2e;display:flex;align-items:cent
 .form-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px}
 
 /* Confirm Modal */
-#modal{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.4);z-index:1000;align-items:center;justify-content:center}
-#modal:not(.hidden){display:flex}
 #modal .modal{max-width:360px}
 .confirm-text{font-size:14px;color:#333;margin-bottom:16px}
 .modal-actions{display:flex;gap:8px;justify-content:flex-end}
 
 /* Help Modal */
-#help-modal{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.4);z-index:1000;align-items:center;justify-content:center}
-#help-modal:not(.hidden){display:flex}
 .help-body{font-size:13px;line-height:1.7}
 .help-body ul{margin:8px 0;padding-left:20px}
 .help-body li{margin-bottom:4px}

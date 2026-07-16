@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>云电脑保活管理</title>
 <link rel="icon" type="image/png" href="/static/logo.png" />
-<link rel="stylesheet" href="/static/app.css?v=881" />
+<link rel="stylesheet" href="/static/app.css?v=901" />
 </head>
 <body>
 <div class="container">
@@ -102,8 +102,8 @@
       <p>在同一页完成账号配置与保活控制。</p>
       <ul>
         <li><b>账号管理</b>：添加账号→登录→勾选需要保活的云电脑</li>
-        <li><b>运行状态</b>：查看保活状态、启动/停止</li>
-        <li><b>日志</b>：查看全局事件日志</li>
+        <li><b>运行状态</b>：每台云电脑独立启动/停止保活</li>
+        <li><b>日志</b>：每台云电脑独立日志，每5秒自动刷新</li>
       </ul>
       <p>关掉浏览器页面后，已启动的保活仍在后台运行。</p>
     </div>
@@ -114,6 +114,6 @@
 </div>
 
 <div class="toast hidden" id="toast"></div>
-<script src="/static/app.js?v=881"></script>
+<script src="/static/app.js?v=901"></script>
 </body>
 </html>

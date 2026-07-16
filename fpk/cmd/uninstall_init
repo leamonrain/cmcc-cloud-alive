@@ -1,0 +1,5 @@
+#!/bin/bash
+# Pre-uninstallation tasks (runs before files are removed)
+set -e
+echo "Preparing $TRIM_APPNAME uninstall..." > "$TRIM_TEMP_LOGFILE"
+exit 0
