@@ -1,5 +1,5 @@
 appname=CMCCCloudAlive
-version=1.0.0
+version=1.0.1
 display_name=爱家移动云电脑
 desc=移动云电脑保活管理工具
 source=thirdparty
@@ -9,6 +9,6 @@ maintainer_url=https://github.com/1936-zero/cmcc-cloud-alive
 os_min_version=1.2.0
 ctl_stop=true
 service_port=18080
-checkport=true
 desktop_uidir=ui
 desktop_applaunchname=CMCCCloudAlive.Main
+install_dep_apps=python312

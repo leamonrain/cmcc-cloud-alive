@@ -1,19 +1,18 @@
 #!/bin/bash
 set -e
-PATH="/var/apps/python312/target/bin:$TRIM_APPDEST/src/.venv/bin:/usr/local/bin:$PATH"
 PORT="${TRIM_SERVICE_PORT:-18080}"
-PIDFILE="$TRIM_PKGVAR/uvicorn.pid"
+PIDFILE="${TRIM_PKGVAR}/uvicorn.pid"
+UVICORN_BIN="/vol2/@appcenter/CMCCCloudAlive/src/.venv/bin/uvicorn"
+APPDIR="/vol2/@appcenter/CMCCCloudAlive/src"
 
 case "$1" in
   start)
     echo "Starting $TRIM_APPNAME $TRIM_APPVER" > "$TRIM_TEMP_LOGFILE"
-    cd "$TRIM_APPDEST/src"
+    cd "$APPDIR"
     if [ ! -f "$PIDFILE" ] || ! kill -0 $(cat "$PIDFILE") 2>/dev/null; then
-      nohup uvicorn webui.app:app \
+      nohup "$UVICORN_BIN" cmcc_cloud_alive.webui.app:app \
         --host 127.0.0.1 --port "$PORT" \
-        --workers 1 --log-level info \
-        --pidfile "$PIDFILE" \
-        > "$TRIM_PKGVAR/uvicorn.log" 2>&1 &
+        --workers 1 --log-level info > "$TRIM_PKGVAR/uvicorn.log" 2>&1 &
       echo $! > "$PIDFILE"
       echo "Started uvicorn (PID $(cat $PIDFILE))"
     else
