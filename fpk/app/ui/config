@@ -4,6 +4,8 @@
       "title": "爱家移动云电脑",
       "icon": "images/icon_{0}.png",
       "type": "iframe",
+      "protocol": "http",
+      "port": "18080",
       "url": "/cgi/ThirdParty/CMCCCloudAlive/index.cgi/",
       "allUsers": true
     }
