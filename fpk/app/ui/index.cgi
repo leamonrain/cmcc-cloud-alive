@@ -1,4 +1,4 @@
 #!/bin/bash
-# CGI proxy — set up PATH then delegate to Python
-export PATH="/var/apps/python312/target/bin:$TRIM_APPDEST/src/.venv/bin:/usr/local/bin:/usr/bin:/bin"
-exec python3 "$TRIM_APPDEST/ui/proxy.py"
+APPDEST="/var/apps/CMCCCloudAlive/target"
+export PATH="/var/apps/python312/target/bin:$APPDEST/src/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+exec python3 "$APPDEST/ui/proxy.py"

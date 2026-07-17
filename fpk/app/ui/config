@@ -6,7 +6,7 @@
       "type": "iframe",
       "protocol": "http",
       "port": "18080",
-      "url": "/cgi/ThirdParty/CMCCCloudAlive/index.cgi/",
+      "url": "/",
       "allUsers": true
     }
   }

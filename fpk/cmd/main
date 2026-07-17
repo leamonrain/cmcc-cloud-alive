@@ -4,6 +4,7 @@ PORT="${TRIM_SERVICE_PORT:-18080}"
 PIDFILE="${TRIM_PKGVAR}/uvicorn.pid"
 UVICORN_BIN="/vol2/@appcenter/CMCCCloudAlive/src/.venv/bin/uvicorn"
 APPDIR="/vol2/@appcenter/CMCCCloudAlive/src"
+export CMCC_ALIVE_HOME="${TRIM_PKGVAR}"
 
 case "$1" in
   start)

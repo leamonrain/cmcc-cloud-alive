@@ -1,9 +1,9 @@
 """CGI proxy — forward requests to local uvicorn daemon (127.0.0.1:TRIM_SERVICE_PORT)."""
-import os, sys, urllib.request, urllib.error, time, signal, io
+import os, sys, urllib.request, urllib.error, time
 
+APPDEST = "/var/apps/CMCCCloudAlive/target"
 PORT = os.environ.get("TRIM_SERVICE_PORT", "18080")
-PIDFILE = os.environ.get("TRIM_PKGVAR", "/tmp") + "/uvicorn.pid"
-APPDEST = os.environ.get("TRIM_APPDEST", "/var/apps/CMCCCloudAlive/target")
+PIDFILE = os.environ.get("TRIM_PKGVAR", APPDEST + "/../../var") + "/uvicorn.pid"
 
 def ensure_backend():
     if os.path.exists(PIDFILE):
@@ -33,13 +33,15 @@ def ensure_backend():
         os.chdir(APPDEST + "/src")
         with open("/dev/null", "r") as fd:
             os.dup2(fd.fileno(), 0)
-        with open(PIDFILE + ".log", "a", buffering=1) as log:
+        with open(os.environ.get("TRIM_PKGVAR", APPDEST + "/../../var") + "/uvicorn.log", "a") as log:
             os.dup2(log.fileno(), 1); os.dup2(log.fileno(), 2)
-        args = [sys.executable, "-m", "uvicorn", "webui.app:app",
+        venv_python = APPDEST + "/src/.venv/bin/python3"
+        args = [venv_python, "-m", "uvicorn", "cmcc_cloud_alive.webui.app:app",
                 "--host", "127.0.0.1", "--port", PORT,
-                "--workers", "1", "--log-level", "info", "--pidfile", PIDFILE]
-        os.execve(sys.executable, args, {"PATH": os.environ.get("PATH","/usr/local/bin:/usr/bin"),
-                  "HOME": os.environ.get("HOME","/root"), "LANG": "zh_CN.UTF-8"})
+                "--workers", "1", "--log-level", "info",
+                "--app-dir", APPDEST + "/src"]
+        os.execve(venv_python, args, {"PATH": APPDEST + "/src/.venv/bin:/var/apps/python312/target/bin:/usr/local/bin:/usr/bin",
+                  "HOME": "/root", "LANG": "zh_CN.UTF-8"})
 
 def main():
     ensure_backend()

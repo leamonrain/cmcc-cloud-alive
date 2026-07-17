@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from starlette.applications import Starlette
+from starlette.exceptions import HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
@@ -1674,7 +1675,10 @@ routes = [
 if _STATIC_DIR.is_dir():
     routes.append(Mount("/static", app=StaticFiles(directory=str(_STATIC_DIR)), name="static"))
 
-app = Starlette(debug=os.environ.get("CMCC_WEBUI_DEBUG") == "1", routes=routes)
+async def not_found(request: Request, exc: HTTPException) -> Response:
+    return await index(request)
+
+app = Starlette(debug=os.environ.get("CMCC_WEBUI_DEBUG") == "1", routes=routes, exception_handlers={404: not_found})
 app.add_middleware(OptionalTokenMiddleware)
 
 
