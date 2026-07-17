@@ -6,6 +6,7 @@ Per-desktop composite keys "{profile_id}:{desktop_id}" for parallel jobs.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -19,6 +20,7 @@ from typing import Any, Dict, List, Optional
 
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
@@ -408,6 +410,20 @@ class FakeOrchestrator:
                     continue
                 result[did] = list(self._log_buffers.get(jid, []))[-limit:]
             return result
+
+    def clear_logs(self, profile_id: str, desktop_id: str = "") -> Dict[str, Any]:
+        cnt = 0
+        with self._lock:
+            prefix = profile_id + ":"
+            for key, jid in list(self._by_key.items()):
+                if not key.startswith(prefix):
+                    continue
+                if desktop_id and key != profile_id + ":" + desktop_id:
+                    continue
+                buf = self._log_buffers.get(jid, [])
+                cnt += len(buf)
+                self._log_buffers[jid] = []
+        return {"cleared": cnt}
 
 
 def _load_orchestrator() -> Any:
@@ -1349,9 +1365,9 @@ def resolve_user_protocol(body_protocol=None, state=None, fallback="ZTE"):
         u = str(v or "").strip().upper()
         if u in ("ZX", "ZHONGXING"):
             u = "ZTE"
-        if u == "SANGFOR":
-            u = "SCG"
-        if u in ("ZTE", "SCG", "V3"):
+        if u in ("SANGFOR", "SCG"):
+            u = "CAG"
+        if u in ("ZTE", "CAG", "SCG", "V3"):
             return u
     return str(fallback or "ZTE").upper()
 
@@ -1609,7 +1625,7 @@ async def jobs_stop(request: Request) -> JSONResponse:
 
 
 async def logs_global(request: Request) -> JSONResponse:
-    pid = request.query_params.get("profileId")
+    pid = request.query_params.get("profileId") or ""
     did = request.query_params.get("desktopId")
     by_desktop = ORCH.recent_logs(profile_id=pid, desktop_id=did, limit=200)
     safe = {
@@ -1674,7 +1690,10 @@ routes = [
 if _STATIC_DIR.is_dir():
     routes.append(Mount("/static", app=StaticFiles(directory=str(_STATIC_DIR)), name="static"))
 
-app = Starlette(debug=os.environ.get("CMCC_WEBUI_DEBUG") == "1", routes=routes)
+async def not_found(request: Request, exc: HTTPException) -> Response:
+    return await index(request)
+
+app = Starlette(debug=os.environ.get("CMCC_WEBUI_DEBUG") == "1", routes=routes, exception_handlers={404: not_found})
 app.add_middleware(OptionalTokenMiddleware)
 
 

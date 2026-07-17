@@ -1365,9 +1365,9 @@ def resolve_user_protocol(body_protocol=None, state=None, fallback="ZTE"):
         u = str(v or "").strip().upper()
         if u in ("ZX", "ZHONGXING"):
             u = "ZTE"
-        if u == "SANGFOR":
-            u = "SCG"
-        if u in ("ZTE", "SCG", "V3"):
+        if u in ("SANGFOR", "SCG"):
+            u = "CAG"
+        if u in ("ZTE", "CAG", "SCG", "V3"):
             return u
     return str(fallback or "ZTE").upper()
 

@@ -120,7 +120,7 @@ class FakeBackend:
         self.job_id = job_id
         self.stop_evt = stop_evt
         self.protocol = (protocol or "ZTE").upper()
-        if self.protocol not in ("ZTE", "SCG"):
+        if self.protocol not in ("ZTE", "SCG", "CAG", "V3"):
             self.protocol = "ZTE"
         self.traffic_sec = int(traffic_sec) if traffic_sec and int(traffic_sec) > 0 else 60
         self.user_service_id = user_service_id or "dry-run-svc"
@@ -149,10 +149,16 @@ class FakeBackend:
         duration_done = f"{float(duration_cfg) + 0.42:.2f}"
         stage_done = f"{kind}-keepalive-done"
         usid = self.user_service_id
-        if proto == "SCG":
-            hand = (f"[{self._stamp()}] 第{round_no}轮SCG保活：手选SCG，调用纯Python SCG协议 "
+        if proto in ("SCG", "CAG"):
+            lbl = "CAG" if proto == "CAG" else "SCG"
+            hand = (f"[{self._stamp()}] 第{round_no}轮{lbl}保活：手选{lbl}，调用纯Python SCG协议 "
                     f"duration={duration_cfg}s userServiceId={usid}")
-            done = (f"[{self._stamp()}] 第{round_no}轮SCG保活完成 "
+            done = (f"[{self._stamp()}] 第{round_no}轮{lbl}保活完成 "
+                    f"kind={kind} ok=True stage={stage_done} duration={duration_done}s")
+        elif proto == "V3":
+            hand = (f"[{self._stamp()}] 第{round_no}轮V3保活：CAG TCP/TLS隧道模式 "
+                    f"duration={duration_cfg}s userServiceId={usid}")
+            done = (f"[{self._stamp()}] 第{round_no}轮V3保活完成 "
                     f"kind={kind} ok=True stage={stage_done} duration={duration_done}s")
         else:
             hand = (f"[{self._stamp()}] 第{round_no}轮ZTE保活：手选ZTE，调用长测同款CAG/mux/raw-SPICE "
@@ -264,9 +270,19 @@ class SubprocessBackend:
 
     def _build_cmd(self) -> List[str]:
         creds = _live_creds_from_state(self.state_path)
+        usid = creds.get("user_service_id")
+        proto = (self.protocol or "ZTE").upper()
+
+        if proto in ("CAG", "SCG"):
+            cmd = [sys.executable, "-m", "cmcc_cloud_alive", "--state", str(self.state_path),
+                   "product-keepalive", "--forever"]
+            if usid:
+                cmd.extend(["--user-service-id", usid])
+            cmd.extend(self.extra_args)
+            return cmd
+
         cmd = [sys.executable, "-m", "cmcc_cloud_alive", "--state", str(self.state_path),
                "product-keepalive", "interactive"]
-        usid = creds.get("user_service_id")
         if usid:
             cmd.append(usid)
         cmd.append("--non-interactive")
@@ -634,8 +650,8 @@ class Orchestrator:
         if protocol == "V3":
             return self._start_job_v3(profile_id, desktop_id, state_path, extra_args, mode,
                                        interval_sec, traffic_sec, duration_sec)
-        if protocol not in ("ZTE", "SCG"):
-            raise ValueError("protocol must be ZTE, SCG, or V3")
+        if protocol not in ("ZTE", "SCG", "CAG"):
+            raise ValueError("protocol must be ZTE, SCG, CAG, or V3")
         mode = (mode or "dry-run").lower()
         if mode in ("live", "prod", "production"):
             if not live_allowed():
