@@ -302,6 +302,8 @@ class SubprocessBackend:
             env.pop(k, None)
         env["NO_PROXY"] = "*"
         env["no_proxy"] = "*"
+        src_dir = os.path.abspath(os.path.join(os.path.dirname(sys.executable), '..', '..'))
+        env["PYTHONPATH"] = src_dir + ":" + env.get("PYTHONPATH", "")
         return env
 
     def _acquire_lock(self) -> None:
@@ -422,9 +424,12 @@ class SimpleAliveBackend:
         cmd = self._build_cmd()
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         log_f = open(self.log_path, "a", encoding="utf-8")
+        env = dict(os.environ)
+        src_dir = os.path.abspath(os.path.join(os.path.dirname(sys.executable), '..', '..'))
+        env["PYTHONPATH"] = src_dir + ":" + env.get("PYTHONPATH", "")
         try:
             self._proc = subprocess.Popen(cmd, stdout=log_f, stderr=subprocess.STDOUT,
-                                          stdin=subprocess.DEVNULL, start_new_session=True)
+                                          stdin=subprocess.DEVNULL, start_new_session=True, env=env)
         except Exception as e:
             log_f.close()
             raise RuntimeError(f"V3 spawn failed: {e}") from e
