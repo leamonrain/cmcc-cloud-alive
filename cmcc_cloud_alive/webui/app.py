@@ -6,6 +6,7 @@ Per-desktop composite keys "{profile_id}:{desktop_id}" for parallel jobs.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
