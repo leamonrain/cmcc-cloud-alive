@@ -1,7 +1,3 @@
 {
-  "usr-local-linker": {
-    "bin": [
-      "bin/cmcc-cloud-alive"
-    ]
-  }
+  "shared-folders": []
 }
