@@ -1,0 +1,4 @@
+#!/bin/bash
+set -e
+echo "Running $TRIM_APPNAME/$TRIM_APPVER $(basename $0)..." > "$TRIM_TEMP_LOGFILE"
+exit 0

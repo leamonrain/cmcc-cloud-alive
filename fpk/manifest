@@ -1,13 +1,12 @@
 appname=CMCCCloudAlive
 version=1.0.0
-display_name="爱家移动云电脑"
-desc="移动云电脑保活管理工具。支持多账号多云电脑并行保活，可选 ZTE/SCG/V3 保活协议。"
+display_name=爱家移动云电脑
+desc=移动云电脑保活管理工具
 source=thirdparty
 platform=all
 maintainer=cmcc-cloud-alive
-maintainer_url="https://github.com/1936-zero/cmcc-cloud-alive"
+maintainer_url=https://github.com/1936-zero/cmcc-cloud-alive
 os_min_version=1.2.0
-install_dep_apps=python312
 ctl_stop=true
 service_port=18080
 checkport=true
