@@ -158,7 +158,7 @@ def simple_alive_v3(
                 except Exception:
                     break
 
-                now_status = time.time()
+                token.ensure_token(state_path)
                 item = cloud.status(target, state_path)
                 if not cloud.is_running(item):
                     shutdowns += 1
