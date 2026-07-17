@@ -1,8 +1,8 @@
-"""Starlette WebUI for multi-profile per-desktop keepalive orchestration (FNOS).
+"""Starlette WebUI for multi-profile keepalive orchestration (J3).
 
-Parent process only: REST + static shell. No SSE (front-end polls).
-Uses in-memory FakeOrchestrator until real Orchestrator is available.
-Per-desktop composite keys "{profile_id}:{desktop_id}" for parallel jobs.
+Parent process only: REST + SSE + static shell. Does NOT run keepalive loops
+on the ASGI event-loop thread. Uses in-memory FakeOrchestrator until J2 lands
+`cmcc_cloud_alive.webui.orchestrator` (same method names).
 """
 from __future__ import annotations
 
@@ -16,13 +16,12 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.exceptions import HTTPException
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, Response
+from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
@@ -238,10 +237,12 @@ def parse_job_timing_fields(body: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         if int(duration) == 0:
             simple_mode = "2"
     extra_args = [
-        "--heartbeat-interval",
-        str(interval),
-        "--duration",
-        str(duration),
+        "--interval-minutes",
+        str(interval_minutes),
+        "--traffic-seconds",
+        str(traffic),
+        "--mode",
+        simple_mode,
     ]
     return {
         "intervalSec": interval,
@@ -252,14 +253,111 @@ def parse_job_timing_fields(body: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Token middleware (optional CMCC_WEBUI_TOKEN)
+# Access token gate (file > env; 8317-style login shell)
 # ---------------------------------------------------------------------------
 
+_ACCESS_TOKEN_FILENAME = "webui_access_token"
+
+
+def _access_token_path() -> Path:
+    return _data_dir() / _ACCESS_TOKEN_FILENAME
+
+
+def _read_access_token() -> str:
+    """Resolve expected WebUI access token.
+
+    Priority:
+    1. durable file under data dir (UI setup / change)
+    2. CMCC_WEBUI_TOKEN env (.env / compose)
+    """
+    try:
+        p = _access_token_path()
+        if p.is_file():
+            raw = p.read_text(encoding="utf-8", errors="replace").strip()
+            # accept single-line token only; ignore comments/blank
+            for line in raw.splitlines():
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                return s
+    except OSError:
+        pass
+    return (os.environ.get("CMCC_WEBUI_TOKEN") or "").strip()
+
+
+def _write_access_token(token: str) -> Path:
+    """Persist access token to data dir (mode 0600). Returns path."""
+    token = (token or "").strip()
+    if not token:
+        raise ValueError("empty token")
+    if len(token) < 4:
+        raise ValueError("token too short (min 4)")
+    if len(token) > 256:
+        raise ValueError("token too long (max 256)")
+    # reject whitespace / control chars
+    if any(c.isspace() for c in token):
+        raise ValueError("token must not contain whitespace")
+    root = _data_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    path = _access_token_path()
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(token + "\n", encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    tmp.replace(path)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return path
+
+
+def _clear_access_token() -> Path:
+    """Remove file-based access token (disable gate). Env CMCC_WEBUI_TOKEN still wins if set."""
+    path = _access_token_path()
+    try:
+        if path.is_file():
+            path.unlink()
+    except OSError as e:
+        raise OSError(f"无法删除访问密钥文件: {e}") from e
+    return path
+
+
+def _extract_request_token(request: Request) -> str:
+    auth = request.headers.get("authorization") or ""
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return (
+        request.headers.get("x-api-token")
+        or request.query_params.get("token")
+        or ""
+    ).strip()
+
+
+def _token_ok(provided: str, expected: str) -> bool:
+    if not expected or not provided:
+        return False
+    # secrets.compare_digest requires equal length; pad-safe via hmac style length check
+    try:
+        return secrets.compare_digest(provided, expected)
+    except (TypeError, ValueError):
+        return False
+
+
 class OptionalTokenMiddleware(BaseHTTPMiddleware):
+    """Gate business APIs behind access token (file or env).
+
+    Open always: shell HTML, static, health, system/info, auth setup/login/status.
+    gate6:
+    - no token configured → open access (auth disabled)
+    - token configured → require valid Bearer / x-api-token / ?token=
+    """
+
     async def dispatch(self, request: Request, call_next):
-        expected = os.environ.get("CMCC_WEBUI_TOKEN") or ""
         path = request.url.path
-        # Always open: health aliases (compose/X2/T3) + static + root shell
+        # Always open: health aliases (compose/X2/T3) + static + root shell + auth bootstrap
         # FLAG#59: /api/health must match docker HEALTHCHECK
         open_exact = {
             "/",
@@ -267,27 +365,29 @@ class OptionalTokenMiddleware(BaseHTTPMiddleware):
             "/health",
             "/api/health",
             "/api/system/health",
-            # X9: allow FE to discover tokenRequired before Bearer/localStorage is set
+            # X9: allow FE to discover tokenRequired / setupRequired before Bearer set
             "/api/system/info",
             "/api/info",
+            "/api/auth/status",
+            "/api/auth/setup",
+            "/api/auth/login",
         }
         open_prefixes = ("/static/", "/favicon")
         if path in open_exact or path.startswith(open_prefixes):
             return await call_next(request)
+
+        expected = _read_access_token()
+        # gate6: no token configured → open access (auth disabled)
         if not expected:
             return await call_next(request)
-        auth = request.headers.get("authorization") or ""
-        token = ""
-        if auth.lower().startswith("bearer "):
-            token = auth[7:].strip()
-        if not token:
-            token = request.headers.get("x-api-token") or request.query_params.get("token") or ""
-        if not secrets.compare_digest(token, expected):
+
+        token = _extract_request_token(request)
+        if not _token_ok(token, expected):
             return api_error(
-                "AUTH_FAILED",
-                "invalid or missing CMCC_WEBUI_TOKEN",
+                "TOKEN_INVALID",
+                "访问密钥无效或缺失",
                 401,
-                next_step="请在请求头携带有效 Bearer/CMCC_WEBUI_TOKEN 后重试",
+                next_step="请在登录门输入正确访问密钥，或在请求头携带 Bearer / x-api-token",
             )
         return await call_next(request)
 
@@ -297,81 +397,118 @@ class OptionalTokenMiddleware(BaseHTTPMiddleware):
 # ---------------------------------------------------------------------------
 
 class FakeOrchestrator:
-    """In-memory job table. Per-desktop composite keys; no SSE."""
+    """In-memory job table. Method names match planned J2 orchestrator."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._jobs: Dict[str, Dict[str, Any]] = {}
-        self._by_key: Dict[str, str] = {}
+        self._jobs: Dict[str, Dict[str, Any]] = {}  # job_id -> job
+        self._by_profile: Dict[str, str] = {}  # profile_id -> job_id
         self._log_buffers: Dict[str, List[Dict[str, str]]] = {}
+        self._subscribers: List[asyncio.Queue] = []
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
-    def _job_key(self, profile_id: str, desktop_id: str) -> str:
-        return f"{profile_id}:{desktop_id}"
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
+
+    def subscribe(self) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue(maxsize=256)
+        self._subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue) -> None:
+        try:
+            self._subscribers.remove(q)
+        except ValueError:
+            pass
+
+    def _emit(self, event: str, data: Dict[str, Any]) -> None:
+        payload = {"event": event, "data": data}
+        for q in list(self._subscribers):
+            try:
+                q.put_nowait(payload)
+            except asyncio.QueueFull:
+                pass
 
     def list_jobs(self) -> List[Dict[str, Any]]:
         with self._lock:
             return [dict(j) for j in self._jobs.values()]
 
-    def get_status(self, profile_id: str, desktop_id: str) -> Dict[str, Any]:
-        key = self._job_key(profile_id, desktop_id)
+    def get_status(self, profile_id: str) -> Dict[str, Any]:
         with self._lock:
-            jid = self._by_key.get(key)
+            jid = self._by_profile.get(profile_id)
             if not jid:
-                return {"profileId": profile_id, "desktopId": desktop_id, "status": "idle", "jobId": None}
+                return {"profileId": profile_id, "status": "idle", "jobId": None}
             j = self._jobs.get(jid) or {}
-            return {"profileId": profile_id, "desktopId": desktop_id, "jobId": jid,
-                    "status": j.get("status", "unknown"), "protocol": j.get("protocol"),
-                    "pid": j.get("pid"), "startedAt": j.get("startedAt")}
-
-    def get_statuses(self, profile_id: str) -> List[Dict[str, Any]]:
-        out = []
-        prefix = profile_id + ":"
-        with self._lock:
-            for key, jid in self._by_key.items():
-                if not key.startswith(prefix):
-                    continue
-                did = key[len(prefix):]
-                j = self._jobs.get(jid) or {}
-                out.append({"profileId": profile_id, "desktopId": did, "jobId": jid,
-                            "status": j.get("status", "idle"), "protocol": j.get("protocol"),
-                            "pid": j.get("pid"), "startedAt": j.get("startedAt")})
-        return out
+            return {
+                "profileId": profile_id,
+                "status": j.get("status", "unknown"),
+                "jobId": jid,
+                "protocol": j.get("protocol"),
+                "pid": j.get("pid"),
+                "startedAt": j.get("startedAt"),
+            }
 
     def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
             j = self._jobs.get(job_id)
             return dict(j) if j else None
 
-    def start_job(self, profile_id: str, desktop_id: str, state_path: Path,
-                  protocol: str = "ZTE", extra_args: Optional[List[str]] = None,
-                  mode: str = "live", interval_sec: Optional[int] = None,
-                  traffic_sec: Optional[int] = None,
-                  duration_sec: Optional[int] = None) -> Dict[str, Any]:
+    def start_job(
+        self,
+        profile_id: str,
+        state_path: Path,
+        protocol: str = "ZTE",
+        extra_args: Optional[List[str]] = None,
+        mode: str = "live",
+        interval_sec: Optional[int] = None,
+        traffic_sec: Optional[int] = None,
+        duration_sec: Optional[int] = None,
+    ) -> Dict[str, Any]:
         protocol = (protocol or "ZTE").upper()
-        if protocol not in ("ZTE", "SCG", "V3"):
-            raise ValueError("protocol must be ZTE, SCG, or V3")
-        key = self._job_key(profile_id, desktop_id)
+        if protocol not in ("ZTE", "SCG"):
+            raise ValueError("protocol must be ZTE or SCG")
         with self._lock:
-            existing = self._by_key.get(key)
+            existing = self._by_profile.get(profile_id)
             if existing and self._jobs.get(existing, {}).get("status") == "running":
-                raise RuntimeError("JOB_IN_USE")
+                raise RuntimeError("PROFILE_IN_USE")
             job_id = uuid.uuid4().hex[:12]
-            job = {"id": job_id, "jobId": job_id, "profileId": profile_id, "desktopId": desktop_id,
-                   "statePath": str(state_path), "protocol": protocol, "mode": mode or "live",
-                   "status": "running", "pid": None, "startedAt": _now_iso(), "stoppedAt": None,
-                   "detail": "fake orchestrator dry-run (no LIVE child)",
-                   "extraArgs": list(extra_args or []), "intervalSec": interval_sec,
-                   "trafficSec": traffic_sec, "durationSec": duration_sec}
+            job = {
+                "id": job_id,
+                "jobId": job_id,
+                "profileId": profile_id,
+                "statePath": str(state_path),
+                "protocol": protocol,
+                "mode": mode or "live",
+                "status": "running",
+                "pid": None,  # fake: no subprocess yet (J2)
+                "startedAt": _now_iso(),
+                "stoppedAt": None,
+                "detail": "fake orchestrator dry-run (no LIVE child)",
+                "extraArgs": list(extra_args or []),
+                "intervalSec": interval_sec,
+                "trafficSec": traffic_sec,
+                "durationSec": duration_sec,
+            }
             self._jobs[job_id] = job
-            self._by_key[key] = job_id
+            self._by_profile[profile_id] = job_id
             self._log_buffers.setdefault(job_id, []).append(
-                {"at": _now_iso(), "line": f"[fake] start {protocol} mode={job['mode']} desktop={desktop_id}"})
+                {"at": _now_iso(), "line": f"[fake] start {protocol} mode={job['mode']} state={state_path.name}"}
+            )
+            self._emit(
+                "job_status",
+                {
+                    "jobId": job_id,
+                    "profileId": profile_id,
+                    "status": "running",
+                    "at": job["startedAt"],
+                    "detail": job["detail"],
+                },
+            )
             return dict(job)
 
-    def stop_job(self, profile_id: str, desktop_id: str) -> Dict[str, Any]:
-        key = self._job_key(profile_id, desktop_id)
+    def stop_job(self, profile_id: str) -> Dict[str, Any]:
         with self._lock:
-            jid = self._by_key.get(key)
+            jid = self._by_profile.get(profile_id)
             if not jid or jid not in self._jobs:
                 raise KeyError("NOT_FOUND")
             job = self._jobs[jid]
@@ -381,49 +518,31 @@ class FakeOrchestrator:
             job["stoppedAt"] = _now_iso()
             job["detail"] = "stopped by API"
             self._log_buffers.setdefault(jid, []).append(
-                {"at": job["stoppedAt"], "line": "[fake] stop requested"})
+                {"at": job["stoppedAt"], "line": "[fake] stop requested"}
+            )
+            self._emit(
+                "job_status",
+                {
+                    "jobId": jid,
+                    "profileId": profile_id,
+                    "status": "stopped",
+                    "at": job["stoppedAt"],
+                },
+            )
             return dict(job)
 
-    def stop_all(self, profile_id: str) -> List[Dict[str, Any]]:
-        results = []
-        prefix = profile_id + ":"
-        with self._lock:
-            keys = [k for k in self._by_key if k.startswith(prefix)]
-        for key in keys:
-            did = key[len(profile_id) + 1:]
-            try:
-                results.append(self.stop_job(profile_id, did))
-            except KeyError:
-                pass
-        return results
+    def recent_logs(self, job_id: Optional[str] = None, profile_id: Optional[str] = None, limit: int = 100) -> List[Dict[str, str]]:
+        """Return job/card logs only when scoped.
 
-    def recent_logs(self, profile_id: str, desktop_id: Optional[str] = None,
-                    limit: int = 200) -> Dict[str, List[Dict[str, str]]]:
+        HARD_GATE#768-B / ASSIGN#785#4: unscoped /api/logs must not flatten
+        job buffers into page-level global log. Card logs stay profile/job scoped.
+        """
         with self._lock:
-            prefix = profile_id + ":"
-            result: Dict[str, List[Dict[str, str]]] = {}
-            for key, jid in self._by_key.items():
-                if not key.startswith(prefix):
-                    continue
-                did = key[len(prefix):]
-                if desktop_id and did != desktop_id:
-                    continue
-                result[did] = list(self._log_buffers.get(jid, []))[-limit:]
-            return result
-
-    def clear_logs(self, profile_id: str, desktop_id: str = "") -> Dict[str, Any]:
-        cnt = 0
-        with self._lock:
-            prefix = profile_id + ":"
-            for key, jid in list(self._by_key.items()):
-                if not key.startswith(prefix):
-                    continue
-                if desktop_id and key != profile_id + ":" + desktop_id:
-                    continue
-                buf = self._log_buffers.get(jid, [])
-                cnt += len(buf)
-                self._log_buffers[jid] = []
-        return {"cleared": cnt}
+            if not job_id and profile_id:
+                job_id = self._by_profile.get(profile_id)
+            if not job_id:
+                return []
+            return list(self._log_buffers.get(job_id, []))[-limit:]
 
 
 def _load_orchestrator() -> Any:
@@ -479,11 +598,6 @@ _SHARED_ACCOUNT_KEYS = (
     "lastLoginStatus",
     "lastLoginAttemptAt",
     "lastLoginError",
-    "userServiceId",
-    "selectedUserServiceId",
-    "desktopLabel",
-    "vmId",
-    "lastVmId",
 )
 
 
@@ -560,6 +674,39 @@ def _sync_shared_account(state: Dict[str, Any]) -> Optional[Path]:
     return shared
 
 
+
+def _normalize_client_profile(value: Any, default: str = "linux") -> str:
+    """Accept linux|windows|mac (case-insensitive); invalid → default."""
+    v = str(value or "").strip().lower()
+    if v in ("linux", "windows", "mac"):
+        return v
+    return default
+
+
+def _apply_client_profile_from_body(state: Dict[str, Any], body: Optional[Dict[str, Any]]) -> bool:
+    """If body carries clientProfile, write normalized value onto card state.
+
+    Returns True when state was changed.
+    """
+    if not isinstance(body, dict) or "clientProfile" not in body:
+        return False
+    raw = body.get("clientProfile")
+    if raw is None or str(raw).strip() == "":
+        return False
+    new_v = _normalize_client_profile(raw, default="")
+    if not new_v:
+        return False
+    old = _normalize_client_profile(state.get("clientProfile"), default="")
+    if old == new_v:
+        # still ensure canonical form
+        if state.get("clientProfile") != new_v:
+            state["clientProfile"] = new_v
+            return True
+        return False
+    state["clientProfile"] = new_v
+    return True
+
+
 def _hydrate_profile_from_shared(state: Dict[str, Any]) -> Dict[str, Any]:
     """Fill missing token/password from shared account file (card keeps own usid)."""
     username = str(state.get("username") or state.get("phone") or "").strip()
@@ -620,14 +767,15 @@ def _write_state(path: Path, data: Dict[str, Any]) -> None:
 
 
 def _public_profile(profile_id: str, state: Dict[str, Any], path: Path) -> Dict[str, Any]:
+    st = ORCH.get_status(profile_id) if hasattr(ORCH, "get_status") else {"status": "idle"}
+    job_status = st.get("status") or "idle"
+    # Official protocol slot (from spu / last list) ≠ user-selected keepalive protocol.
     spu = state.get("spuCode") or state.get("lastSpuCode") or ""
     spu = str(spu) if spu is not None else ""
     official = state.get("lastOfficialProtocol") or state.get("protocolHint") or ""
     official = str(official).upper() if official else ""
     if not official and spu:
         official = _spu_protocol_hint(spu)
-    statuses = ORCH.get_statuses(profile_id) if hasattr(ORCH, "get_statuses") else []
-    any_running = any(s.get("status") == "running" for s in statuses)
     return {
         "id": profile_id,
         "displayName": state.get("displayName") or profile_id,
@@ -641,10 +789,10 @@ def _public_profile(profile_id: str, state: Dict[str, Any], path: Path) -> Dict[
         "tokenPresent": bool(state.get("sohoToken") or state.get("token")),
         "isSubAccount": bool(state.get("isSubAccount")),
         "loginMode": state.get("loginMode") or ("sub" if state.get("isSubAccount") else "main"),
-        "clientProfile": state.get("clientProfile") or "linux",
+        "clientProfile": _normalize_client_profile(state.get("clientProfile"), default="linux"),
         "draft": bool(state.get("draft")),
-        "jobStatus": "running" if any_running else "idle",
-        "desktopStatuses": statuses,
+        "jobStatus": job_status,
+        "jobId": st.get("jobId"),
         "statePath": str(path),
         "updatedAt": state.get("updatedAt") or (
             datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).astimezone().isoformat(timespec="seconds")
@@ -701,15 +849,212 @@ async def health(request: Request) -> JSONResponse:
 
 
 async def system_info(request: Request) -> JSONResponse:
+    expected = _read_access_token()
+    has_file = False
+    try:
+        has_file = _access_token_path().is_file() and bool(
+            _access_token_path().read_text(encoding="utf-8", errors="replace").strip()
+        )
+    except OSError:
+        has_file = False
+    has_env = bool((os.environ.get("CMCC_WEBUI_TOKEN") or "").strip())
     return JSONResponse(
         {
             "ok": True,
+            "service": "cmcc-cloud-alive",
             "dataDir": str(_data_dir()),
             "profilesDir": str(profiles_dir()),
             "cliCallable": True,  # package present; not probing LIVE
-            "version": "0.1.0-webui-j3",
-            "tokenRequired": bool(os.environ.get("CMCC_WEBUI_TOKEN")),
+            # Footer: "服务 cmcc-cloud-alive · v{version}" — align with WebUI baseline id.
+            "version": "0.1.0-webui-871d-access-gate17",
+            "tokenRequired": bool(expected),
+            # gate6: empty token = open access; setup is optional (not forced)
+            "setupRequired": False,
+            "authEnabled": bool(expected),
+            "tokenSource": ("file" if has_file else ("env" if has_env else "none")),
             "orchestrator": type(ORCH).__name__,
+        }
+    )
+
+
+async def auth_status(request: Request) -> JSONResponse:
+    """Public: whether setup/login is needed (no secret leaked)."""
+    expected = _read_access_token()
+    provided = _extract_request_token(request)
+    authed = (not expected) or _token_ok(provided, expected)
+    return JSONResponse(
+        {
+            "ok": True,
+            # gate6: no forced first-run; empty token = auth off
+            "setupRequired": False,
+            "tokenRequired": bool(expected),
+            "authEnabled": bool(expected),
+            "authenticated": authed,
+            "version": "0.1.0-webui-871d-access-gate17",
+        }
+    )
+
+
+async def auth_setup(request: Request) -> JSONResponse:
+    """First-run: create durable access token when none configured yet."""
+    if _read_access_token():
+        return api_error(
+            "ALREADY_CONFIGURED",
+            "访问密钥已存在，请使用登录或「设置令牌」修改",
+            409,
+            next_step="在登录页输入现有密钥；修改请点顶栏「设置令牌」",
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    generate = bool(body.get("generate"))
+    token = str(body.get("token") or body.get("accessToken") or "").strip()
+    if generate or not token:
+        token = secrets.token_urlsafe(18)
+    try:
+        path = _write_access_token(token)
+    except ValueError as e:
+        return api_error("VALIDATION", str(e), 400, next_step="请提供 4–256 位无空格密钥，或使用 generate")
+    except OSError as e:
+        return api_error("IO_ERROR", f"写入密钥失败: {e}", 500, next_step="检查数据目录写权限")
+    return JSONResponse(
+        {
+            "ok": True,
+            "setup": True,
+            "token": token,
+            "path": str(path),
+            "message": "访问密钥已写入数据目录，请妥善保存；后续登录需此密钥",
+        }
+    )
+
+
+async def auth_login(request: Request) -> JSONResponse:
+    """Validate access token (does not create sessions server-side; FE stores Bearer)."""
+    expected = _read_access_token()
+    if not expected:
+        # gate6: auth disabled — treat as success so FE can enter console
+        return JSONResponse(
+            {
+                "ok": True,
+                "authenticated": True,
+                "authEnabled": False,
+                "message": "未启用访问密钥，已直接进入控制台",
+            }
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    token = str(body.get("token") or body.get("accessToken") or "").strip()
+    if not token:
+        token = _extract_request_token(request)
+    if not _token_ok(token, expected):
+        return api_error(
+            "TOKEN_INVALID",
+            "访问密钥错误",
+            401,
+            next_step="请检查密钥是否与服务器一致（数据目录 webui_access_token 或 CMCC_WEBUI_TOKEN）",
+        )
+    return JSONResponse({"ok": True, "authenticated": True, "token": token})
+
+
+async def auth_change(request: Request) -> JSONResponse:
+    """Change access token (requires current valid Bearer; writes file).
+
+    gate6: when no token configured yet, allow first enable without currentToken.
+    """
+    expected = _read_access_token()
+    current = _extract_request_token(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    # allow body.currentToken as alternative to Authorization
+    body_current = str(body.get("currentToken") or body.get("oldToken") or "").strip()
+    if body_current:
+        current = body_current
+    if expected and not _token_ok(current, expected):
+        return api_error(
+            "TOKEN_INVALID",
+            "当前访问密钥错误，无法修改",
+            401,
+            next_step="请输入正确的当前密钥后再改密",
+        )
+    generate = bool(body.get("generate"))
+    new_token = str(body.get("token") or body.get("newToken") or body.get("accessToken") or "").strip()
+    if generate or not new_token:
+        new_token = secrets.token_urlsafe(18)
+    try:
+        path = _write_access_token(new_token)
+    except ValueError as e:
+        return api_error("VALIDATION", str(e), 400, next_step="新密钥需 4–256 位且无空格")
+    except OSError as e:
+        return api_error("IO_ERROR", f"写入密钥失败: {e}", 500, next_step="检查数据目录写权限")
+    return JSONResponse(
+        {
+            "ok": True,
+            "changed": True,
+            "authEnabled": True,
+            "token": new_token,
+            "path": str(path),
+            "message": "访问密钥已更新（写入数据目录，优先于环境变量）",
+        }
+    )
+
+
+async def auth_disable(request: Request) -> JSONResponse:
+    """Disable access-token gate by deleting file token (env CMCC_WEBUI_TOKEN still wins)."""
+    expected = _read_access_token()
+    has_env = bool((os.environ.get("CMCC_WEBUI_TOKEN") or "").strip())
+    if has_env and not _access_token_path().is_file():
+        return api_error(
+            "ENV_TOKEN",
+            "当前密钥来自环境变量 CMCC_WEBUI_TOKEN，无法通过本接口关闭",
+            400,
+            next_step="请取消环境变量或改用文件密钥后再关闭鉴权",
+        )
+    if expected:
+        current = _extract_request_token(request)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        body_current = str(body.get("currentToken") or body.get("oldToken") or body.get("token") or "").strip()
+        if body_current:
+            current = body_current
+        if not _token_ok(current, expected):
+            return api_error(
+                "TOKEN_INVALID",
+                "当前访问密钥错误，无法关闭鉴权",
+                401,
+                next_step="请输入正确的当前密钥后再关闭",
+            )
+    try:
+        path = _clear_access_token()
+    except OSError as e:
+        return api_error("IO_ERROR", str(e), 500, next_step="检查数据目录写权限")
+    # If env still set, report residual auth
+    still = _read_access_token()
+    return JSONResponse(
+        {
+            "ok": True,
+            "disabled": not bool(still),
+            "authEnabled": bool(still),
+            "path": str(path),
+            "message": (
+                "已关闭访问鉴权（删除文件密钥）"
+                if not still
+                else "已删除文件密钥，但仍受环境变量 CMCC_WEBUI_TOKEN 约束"
+            ),
         }
     )
 
@@ -728,9 +1073,11 @@ async def profiles_create(request: Request) -> JSONResponse:
     display = (body.get("displayName") or body.get("name") or "").strip()
     username = (body.get("username") or "").strip()
     password = body.get("password")  # write-only
-    client_profile = (body.get("clientProfile") or "linux").strip() or "linux"
-    if client_profile not in ("linux", "windows", "mac"):
+    client_profile = _normalize_client_profile(body.get("clientProfile"), default="linux")
+    if str(body.get("clientProfile") or "").strip() and client_profile not in ("linux", "windows", "mac"):
         return api_error("VALIDATION", "clientProfile must be linux|windows|mac")
+    if client_profile not in ("linux", "windows", "mac"):
+        client_profile = "linux"
     base = _safe_profile_id(display or username or f"p-{uuid.uuid4().hex[:8]}")
     pid = base
     n = 2
@@ -786,18 +1133,18 @@ async def profiles_delete(request: Request) -> JSONResponse:
     stopped = False
     stop_detail = None
     try:
-        statuses = ORCH.get_statuses(pid) if hasattr(ORCH, "get_statuses") else []
-        for s in statuses:
-            did = s.get("desktopId", "")
-            if s.get("status") == "running":
-                try:
-                    ORCH.stop_job(pid, did)
-                    stopped = True
-                    stop_detail = "stopped"
-                except KeyError:
-                    pass
-                except Exception as e:
-                    return api_error("STOP_FAILED", f"stop {pid}/{did} failed: {e}", 500)
+        st = ORCH.get_status(pid) if hasattr(ORCH, "get_status") else {}
+        status = (st or {}).get("status") or "idle"
+        if status == "running":
+            try:
+                job = ORCH.stop_job(pid)
+                stopped = True
+                stop_detail = (job or {}).get("status") or "stopped"
+            except KeyError:
+                # No active job mapping; continue to delete file.
+                stop_detail = "no_job"
+            except Exception as e:
+                return api_error("STOP_FAILED", f"stop before delete failed: {e}", 500)
     except Exception as e:
         return api_error("STOP_FAILED", f"status before delete failed: {e}", 500)
 
@@ -827,34 +1174,6 @@ async def profiles_delete(request: Request) -> JSONResponse:
     )
 
 
-async def profiles_update(request: Request) -> JSONResponse:
-    """Update profile fields (displayName, protocol, clientProfile, mode, interval, etc)."""
-    pid = request.path_params["profile_id"]
-    if not pid or any(x in pid for x in ("/", "\\", "..")):
-        return api_error("VALIDATION", "invalid profile id", 400)
-    path = _profile_path(pid)
-    if not path.is_file():
-        return api_error("NOT_FOUND", f"profile {pid} not found", 404)
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    if not isinstance(body, dict):
-        body = {}
-    state = _read_state(path)
-    upd = False
-    for k in ("displayName", "protocol", "clientProfile", "mode", "intervalMin", "trafficSec", "intervalSec"):
-        if k in body and body.get(k) is not None:
-            state[k] = body[k]
-            upd = True
-    if "protocol" in body:
-        state["lastOfficialProtocol"] = body["protocol"]
-    if upd:
-        state["updatedAt"] = _now_iso()
-        _write_state(path, state)
-    return JSONResponse({"ok": True, "profile": _public_profile(pid, state, path)})
-
-
 def _password_login_for_profile(
     path: Path, username: str, password: str, mode: str = "main"
 ) -> Dict[str, Any]:
@@ -872,6 +1191,76 @@ def _password_login_for_profile(
         state_path=str(path),
         save_password=True,
     )
+
+
+
+async def profiles_patch(request: Request) -> JSONResponse:
+    """Partial update for card UI meta (clientProfile / displayName / protocol draft).
+
+    Does not touch live session tokens except via explicit body keys already
+    handled by login. Used by FE when user toggles 客户端 segment so the choice
+    survives refresh without requiring a full re-login.
+    """
+    pid = request.path_params["profile_id"]
+    path = _profile_path(pid)
+    if not path.is_file():
+        return api_error("NOT_FOUND", f"profile {pid} not found", 404)
+    try:
+        body = await request.json()
+    except Exception:
+        return api_error("VALIDATION", "JSON body required")
+    if not isinstance(body, dict):
+        return api_error("VALIDATION", "JSON object required")
+    state = _read_state(path)
+    changed = False
+    if "clientProfile" in body:
+        raw = body.get("clientProfile")
+        if raw is None or str(raw).strip() == "":
+            return api_error("VALIDATION", "clientProfile must be linux|windows|mac")
+        new_v = _normalize_client_profile(raw, default="")
+        if new_v not in ("linux", "windows", "mac"):
+            return api_error("VALIDATION", "clientProfile must be linux|windows|mac")
+        if state.get("clientProfile") != new_v:
+            state["clientProfile"] = new_v
+            changed = True
+        else:
+            state["clientProfile"] = new_v  # canonicalize
+            changed = True
+    if "displayName" in body and body.get("displayName") is not None:
+        dn = str(body.get("displayName") or "").strip()
+        if dn and state.get("displayName") != dn:
+            state["displayName"] = dn
+            changed = True
+    if "protocol" in body and body.get("protocol") is not None:
+        # store user choice only; resolve_user_protocol remains source at start
+        proto = str(body.get("protocol") or "").strip().upper()
+        if proto:
+            if proto in ("ZX", "ZHONGXING"):
+                proto = "ZTE"
+            if proto == "SANGFOR":
+                proto = "SCG"
+            if proto in ("ZTE", "SCG") and state.get("protocol") != proto:
+                state["protocol"] = proto
+                changed = True
+    if not changed and "clientProfile" not in body:
+        return api_error("VALIDATION", "no supported fields to patch", 400)
+    state["updatedAt"] = _now_iso()
+    _write_state(path, state)
+    try:
+        _sync_shared_account(state)
+    except Exception:
+        pass
+    # re-read + hydrate for response consistency with GET
+    state2 = _read_state(path)
+    try:
+        state2 = _hydrate_profile_from_shared(state2)
+    except Exception:
+        pass
+    # card-level clientProfile must win over shared hydrate defaults
+    if state.get("clientProfile"):
+        state2["clientProfile"] = state["clientProfile"]
+    pub = _public_profile(pid, state2, path)
+    return JSONResponse({"ok": True, "profile": pub})
 
 
 async def profiles_login(request: Request) -> JSONResponse:
@@ -923,6 +1312,9 @@ async def profiles_login(request: Request) -> JSONResponse:
     )
     state["loginMode"] = login_mode
     state["isSubAccount"] = login_mode == "sub"
+    # HARD_GATE#871d-client-token: persist clientProfile from UI (card/composer)
+    if _apply_client_profile_from_body(state, body):
+        state["updatedAt"] = _now_iso()
     if not username and not (state.get("sohoToken") or state.get("token")):
         return api_error(
             "VALIDATION",
@@ -1219,7 +1611,6 @@ async def profiles_desktops(request: Request) -> JSONResponse:
         "yes",
     )
     state = _read_state(path)
-    state = _hydrate_profile_from_shared(state)
     token = (state.get("sohoToken") or state.get("token") or "").strip()
     cached = state.get("cloudList")
     has_cache = isinstance(cached, list) and bool(state.get("lastCloudListAt") or cached)
@@ -1232,19 +1623,10 @@ async def profiles_desktops(request: Request) -> JSONResponse:
         source = "cache"
     elif token:
         try:
-            live_path = _resolve_live_state_path(path, state)
-            raw_items = await asyncio.to_thread(_list_clouds_for_profile, live_path)
+            raw_items = await asyncio.to_thread(_list_clouds_for_profile, path)
             source = "list_clouds"
             # re-read after merge_state wrote cloudList into the same profile file
-            state = _read_state(live_path)
-            # sync back to card profile so next cache read has fresh data
-            if str(live_path) != str(path):
-                card_state = _read_state(path)
-                if state.get("cloudList"):
-                    card_state["cloudList"] = state["cloudList"]
-                    card_state["lastCloudListAt"] = state.get("lastCloudListAt", _now_iso())
-                    card_state["updatedAt"] = _now_iso()
-                    _write_state(path, card_state)
+            state = _read_state(path)
         except Exception as e:
             # Prefer CmccError details without requiring core at import time
             msg = str(e) or e.__class__.__name__
@@ -1365,9 +1747,9 @@ def resolve_user_protocol(body_protocol=None, state=None, fallback="ZTE"):
         u = str(v or "").strip().upper()
         if u in ("ZX", "ZHONGXING"):
             u = "ZTE"
-        if u in ("SANGFOR", "SCG"):
-            u = "CAG"
-        if u in ("ZTE", "CAG", "SCG", "V3"):
+        if u == "SANGFOR":
+            u = "SCG"
+        if u in ("ZTE", "SCG"):
             return u
     return str(fallback or "ZTE").upper()
 
@@ -1383,44 +1765,97 @@ async def profiles_start_job(request: Request) -> JSONResponse:
         body = {}
     if not isinstance(body, dict):
         body = {}
-    did = body.get("desktopId") or request.query_params.get("desktopId") or ""
-    if not did:
-        return api_error("VALIDATION", "desktopId is required", 400)
     mode = body.get("mode") or "live"
     try:
         timing = parse_job_timing_fields(body)
     except ValueError as e:
         return api_error("VALIDATION", str(e))
+    # HARD_GATE#850: save-and-keepalive commits draft into timeline
     state = _read_state(path)
+    # HARD_GATE#871c: user protocol choice — body → profile → ZTE empty-only
     protocol = resolve_user_protocol(body.get("protocol"), state)
-    # Per-desktop protocol override
-    desktop_protos = state.get("desktopProtocols") or {}
-    if did in desktop_protos:
-        protocol = desktop_protos[did]
+    # HARD_GATE#871d-client-token: persist clientProfile before spawn (card + shared)
+    changed = False
+    if _apply_client_profile_from_body(state, body):
+        changed = True
     if state.get("draft"):
         state.pop("draft", None)
+        changed = True
+    if not state.get("clientProfile"):
+        state["clientProfile"] = _normalize_client_profile(
+            body.get("clientProfile") if isinstance(body, dict) else None,
+            default="linux",
+        )
+        changed = True
+    if changed:
         state["updatedAt"] = _now_iso()
         _write_state(path, state)
+        try:
+            _sync_shared_account(state)
+        except Exception:
+            pass
+    # HARD_GATE#868: card keeps UI meta; live child uses shared acct_*.json token
+    # and --user-service-id from THIS card (not from shared, avoids dual-card race).
+    usid = (
+        state.get("userServiceId")
+        or state.get("selectedUserServiceId")
+        or state.get("user_service_id")
+        or ""
+    )
     live_path = _resolve_live_state_path(path, state)
+    # ensure shared has latest credentials/token before spawn
     try:
         _sync_shared_account(state)
         live_path = _resolve_live_state_path(path, state)
     except Exception:
         pass
     try:
-        job = ORCH.start_job(
-            pid, did, live_path,
-            protocol=protocol, mode=mode,
+        job = await asyncio.to_thread(ORCH.start_job,
+            pid,
+            live_path,
+            protocol=protocol,
+            mode=mode,
             extra_args=timing["extraArgs"],
             interval_sec=timing["intervalSec"],
             traffic_sec=timing["trafficSec"],
             duration_sec=timing["durationSec"],
+            user_service_id=str(usid) if usid else None,
         )
+    except TypeError:
+        # older orchestrator signature: pass extra_args only, merge fields on response
+        try:
+            job = await asyncio.to_thread(ORCH.start_job,
+                pid, live_path, protocol=protocol, mode=mode, extra_args=timing["extraArgs"],
+                user_service_id=str(usid) if usid else None,
+            )
+            job = dict(job)
+            job["intervalSec"] = timing["intervalSec"]
+            job["trafficSec"] = timing["trafficSec"]
+            job["durationSec"] = timing["durationSec"]
+            job["extraArgs"] = list(timing["extraArgs"])
+        except RuntimeError as e:
+            if str(e) == "PROFILE_IN_USE":
+                return api_error("PROFILE_IN_USE", "profile already has a running job", 409)
+            if str(e) == "USID_IN_USE":
+                return api_error(
+                    "USID_IN_USE",
+                    "desktop userServiceId already has a running job on another card",
+                    409,
+                )
+            return api_error("VALIDATION", str(e))
+        except ValueError as e:
+            return api_error("VALIDATION", str(e))
+        return JSONResponse({"ok": True, "job": job}, status_code=202)
     except RuntimeError as e:
-        err = str(e)
-        if err in ("JOB_IN_USE", "PROFILE_IN_USE"):
-            return api_error("JOB_IN_USE", "desktop already has a running job", 409)
-        return api_error("VALIDATION", err)
+        if str(e) == "PROFILE_IN_USE":
+            return api_error("PROFILE_IN_USE", "profile already has a running job", 409)
+        if str(e) == "USID_IN_USE":
+            return api_error(
+                "USID_IN_USE",
+                "desktop userServiceId already has a running job on another card",
+                409,
+            )
+        return api_error("VALIDATION", str(e))
     except ValueError as e:
         return api_error("VALIDATION", str(e))
     return JSONResponse({"ok": True, "job": job}, status_code=202)
@@ -1432,17 +1867,183 @@ async def profiles_stop_job(request: Request) -> JSONResponse:
     if not path.is_file():
         return api_error("NOT_FOUND", f"profile {pid} not found", 404)
     try:
+        job = ORCH.stop_job(pid)
+    except KeyError:
+        return api_error("NOT_FOUND", "no job for profile", 404)
+    return JSONResponse({"ok": True, "job": job})
+
+
+def _desktop_logout_for_profile(live_path: Path, user_service_id: str) -> Dict[str, Any]:
+    """Call CLI desktop_logout → /cc/cloudPc/logout/v2 on worker thread."""
+    from cmcc_cloud_alive import logout as logout_mod
+
+    return logout_mod.desktop_logout(
+        user_service_id=user_service_id or None,
+        state_path=str(live_path),
+    )
+
+
+async def profiles_desktop_logout(request: Request) -> JSONResponse:
+    """Desktop session logout via /cc/cloudPc/logout/v2 (same as CLI logout --desktop).
+
+    Uses this card's userServiceId and shared acct_*.json token path so multi-card
+    same-account keeps one live session file (HARD_GATE#868).
+    """
+    pid = request.path_params["profile_id"]
+    path = _profile_path(pid)
+    if not path.is_file():
+        return api_error("NOT_FOUND", f"profile {pid} not found", 404)
+    try:
         body = await request.json()
     except Exception:
         body = {}
     if not isinstance(body, dict):
         body = {}
-    did = body.get("desktopId") or request.query_params.get("desktopId") or ""
+
+    state = _hydrate_profile_from_shared(_read_state(path))
+    usid = (
+        body.get("userServiceId")
+        or body.get("user_service_id")
+        or state.get("userServiceId")
+        or state.get("selectedUserServiceId")
+        or state.get("user_service_id")
+        or ""
+    )
+    usid = str(usid).strip() if usid is not None else ""
+    if not usid:
+        return api_error(
+            "VALIDATION",
+            "userServiceId required for desktop logout",
+            400,
+            next_step="请先选择云桌面，或在配置中填写 userServiceId",
+        )
+    token = state.get("sohoToken") or state.get("token") or ""
+    if not token:
+        return api_error(
+            "AUTH_REQUIRED",
+            "未登录：当前账号没有有效会话（sohoToken），无法桌面登出",
+            401,
+            next_step="请先登录建立会话，再执行桌面登出",
+        )
+
+    # Read-only live path: do NOT _sync_shared_account here.
+    # Sync would write this card's userServiceId into the shared acct_*.json and
+    # clobber a sibling card of the same account (multi-card same-username).
+    live_path = _resolve_live_state_path(path, state)
+
     try:
-        job = ORCH.stop_job(pid, did)
-    except KeyError:
-        return api_error("NOT_FOUND", "no job for profile/desktop", 404)
-    return JSONResponse({"ok": True, "job": job})
+        response = await asyncio.to_thread(_desktop_logout_for_profile, live_path, usid)
+    except Exception as e:
+        msg = str(e) or e.__class__.__name__
+        code_name = "UPSTREAM_ERROR"
+        status = 502
+        resp = getattr(e, "response", None)
+        rc = None
+        if isinstance(resp, dict):
+            rc = resp.get("code")
+        # Token / session expired codes from CMCC SOHO (incl. 4015)
+        auth_codes = (4001, 4003, 4010, 4011, 4015, 4100, 401, 403)
+        low = msg.lower()
+        if (
+            (rc in auth_codes)
+            or "token" in low
+            or "4015" in msg
+            or "未登录" in msg
+            or "登录" in msg and ("失效" in msg or "过期" in msg)
+        ):
+            code_name = "AUTH_EXPIRED"
+            status = 401
+        elif "not found" in low or "userServiceId not found" in msg:
+            code_name = "NOT_FOUND"
+            status = 404
+        return api_error(
+            code_name,
+            f"desktop_logout failed: {msg}",
+            status,
+            next_step=(
+                "会话可能已失效：请重新登录后再试桌面登出"
+                if code_name == "AUTH_EXPIRED"
+                else (
+                    "云桌面 usid 无效或不属于当前账号：请重新「获取云桌面」后再登出"
+                    if code_name == "NOT_FOUND"
+                    else "上游桌面登出失败：检查网络/账号后重试"
+                )
+            ),
+        )
+
+    # api_request returns body even when SOHO code != 2000; map those to API errors
+    # so the UI does not toast "成功" for 4015/stale usid (was the 502 / fake-ok path).
+    if isinstance(response, dict):
+        up_code = response.get("code")
+        up_msg = (
+            response.get("errMsg")
+            or response.get("msg")
+            or response.get("message")
+            or ""
+        )
+        up_msg = str(up_msg)
+        try:
+            up_code_i = int(up_code) if up_code is not None else None
+        except (TypeError, ValueError):
+            up_code_i = None
+        ok_upstream = (up_code_i == 2000) or (str(up_msg).upper() == "SUCCESS")
+        if not ok_upstream:
+            auth_codes = (4001, 4003, 4010, 4011, 4015, 4100, 401, 403)
+            low = up_msg.lower()
+            if (
+                (up_code_i in auth_codes)
+                or "token" in low
+                or "4015" in str(up_code)
+                or "未登录" in up_msg
+                or ("登录" in up_msg and ("失效" in up_msg or "过期" in up_msg))
+            ):
+                return api_error(
+                    "AUTH_EXPIRED",
+                    f"desktop_logout failed: {up_msg or up_code}",
+                    401,
+                    next_step="会话可能已失效：请重新登录后再试桌面登出",
+                )
+            if (
+                "not found" in low
+                or "userServiceId not found" in up_msg
+                or up_code_i in (404, 4004, 5000)
+            ):
+                return api_error(
+                    "NOT_FOUND" if up_code_i != 5000 else "UPSTREAM_ERROR",
+                    f"desktop_logout failed: {up_msg or up_code}",
+                    404 if up_code_i != 5000 else 502,
+                    next_step=(
+                        "云桌面 usid 无效或不属于当前账号：请重新「获取云桌面」后再登出"
+                        if up_code_i != 5000
+                        else "上游桌面登出失败：检查 usid/网络后重试"
+                    ),
+                )
+            return api_error(
+                "UPSTREAM_ERROR",
+                f"desktop_logout failed: {up_msg or up_code}",
+                502,
+                next_step="上游桌面登出失败：检查网络/账号后重试",
+            )
+
+    # Mirror lastDesktopLogout* onto card profile for UI visibility (shared already updated).
+    try:
+        card = _read_state(path)
+        card["lastDesktopLogoutAt"] = _now_iso()
+        card["lastDesktopLogoutUserServiceId"] = usid
+        card["updatedAt"] = _now_iso()
+        _write_state(path, card)
+    except Exception:
+        pass
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "profileId": pid,
+            "userServiceId": usid,
+            "statePath": str(live_path),
+            "response": response,
+        }
+    )
 
 
 async def profiles_logs(request: Request) -> JSONResponse:
@@ -1450,17 +2051,10 @@ async def profiles_logs(request: Request) -> JSONResponse:
     path = _profile_path(pid)
     if not path.is_file():
         return api_error("NOT_FOUND", f"profile {pid} not found", 404)
-    all_logs = request.query_params.get("all") == "1"
-    if all_logs:
-        by_desktop = ORCH.recent_logs(profile_id=pid, desktop_id=None, limit=500)
-    else:
-        did = request.query_params.get("desktopId") or ""
-        by_desktop = ORCH.recent_logs(profile_id=pid, desktop_id=did, limit=200)
-    safe = {
-        did: [{"at": x.get("at"), "line": str(x.get("line", ""))[:2000]} for x in lines]
-        for did, lines in by_desktop.items()
-    }
-    return JSONResponse({"ok": True, "profileId": pid, "logs": safe})
+    lines = ORCH.recent_logs(profile_id=pid, limit=200)
+    # ensure redaction of any accidental secrets in lines
+    safe = [{"at": x.get("at"), "line": str(x.get("line", ""))[:2000]} for x in lines]
+    return JSONResponse({"ok": True, "profileId": pid, "lines": safe})
 
 
 async def profiles_logs_clear(request: Request) -> JSONResponse:
@@ -1469,90 +2063,106 @@ async def profiles_logs_clear(request: Request) -> JSONResponse:
     path = _profile_path(pid)
     if not path.is_file():
         return api_error("NOT_FOUND", f"profile {pid} not found", 404)
-    did = request.query_params.get("desktopId") or ""
-    result = ORCH.clear_logs(profile_id=pid, desktop_id=did)
+    result = ORCH.clear_logs(profile_id=pid)
     return JSONResponse(
         {
             "ok": True,
             "profileId": pid,
             "cleared": int((result or {}).get("cleared") or 0),
+            "jobId": (result or {}).get("jobId"),
             "lines": [],
         }
     )
 
 
-async def profiles_desktop_jobs_get(request: Request) -> JSONResponse:
+async def profiles_events(request: Request) -> StreamingResponse:
+    """SSE stream for a profile (and global job_status/job_log)."""
     pid = request.path_params["profile_id"]
-    did = request.path_params["desktop_id"]
     path = _profile_path(pid)
     if not path.is_file():
         return api_error("NOT_FOUND", f"profile {pid} not found", 404)
-    st = ORCH.get_status(pid, did)
-    return JSONResponse({"ok": True, "job": st})
+
+    queue = ORCH.subscribe()
+
+    async def gen() -> AsyncIterator[bytes]:
+        try:
+            # initial snapshot
+            st = ORCH.get_status(pid)
+            data = json.dumps(
+                {
+                    "jobId": st.get("jobId"),
+                    "profileId": pid,
+                    "status": st.get("status"),
+                    "at": _now_iso(),
+                    "detail": "snapshot",
+                },
+                ensure_ascii=False,
+            )
+            yield f"event: job_status\ndata: {data}\n\n".encode("utf-8")
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield b": keepalive\n\n"
+                    continue
+                ev = item.get("event") or "message"
+                payload = item.get("data") or {}
+                if payload.get("profileId") and payload.get("profileId") != pid:
+                    continue
+                line = json.dumps(redact_obj(payload), ensure_ascii=False)
+                yield f"event: {ev}\ndata: {line}\n\n".encode("utf-8")
+        finally:
+            ORCH.unsubscribe(queue)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
-async def profiles_desktop_jobs_start(request: Request) -> JSONResponse:
-    pid = request.path_params["profile_id"]
-    did = request.path_params["desktop_id"]
-    path = _profile_path(pid)
-    if not path.is_file():
-        return api_error("NOT_FOUND", f"profile {pid} not found", 404)
-    state = _read_state(path)
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    if not isinstance(body, dict):
-        body = {}
-    mode = body.get("mode") or "live"
-    try:
-        timing = parse_job_timing_fields(body)
-    except ValueError as e:
-        return api_error("VALIDATION", str(e))
-    protocol = resolve_user_protocol(body.get("protocol"), state)
-    desktop_protos = state.get("desktopProtocols") or {}
-    if did in desktop_protos:
-        protocol = desktop_protos[did]
-    if state.get("draft"):
-        state.pop("draft", None)
-        state["updatedAt"] = _now_iso()
-        _write_state(path, state)
-    live_path = _resolve_live_state_path(path, state)
-    try:
-        _sync_shared_account(state)
-        live_path = _resolve_live_state_path(path, state)
-    except Exception:
-        pass
-    try:
-        job = ORCH.start_job(
-            pid, did, live_path,
-            protocol=protocol, mode=mode,
-            extra_args=timing["extraArgs"],
-            interval_sec=timing["intervalSec"],
-            traffic_sec=timing["trafficSec"],
-            duration_sec=timing["durationSec"],
-        )
-    except RuntimeError as e:
-        err = str(e)
-        if err in ("JOB_IN_USE", "PROFILE_IN_USE"):
-            return api_error("JOB_IN_USE", "desktop already has a running job", 409)
-        return api_error("VALIDATION", err)
-    except ValueError as e:
-        return api_error("VALIDATION", str(e))
-    return JSONResponse({"ok": True, "job": job}, status_code=202)
+async def events_global(request: Request) -> StreamingResponse:
+    """Global SSE stream — all job_status/job_log events (FE EventSource /api/events)."""
+    queue = ORCH.subscribe()
 
+    async def gen() -> AsyncIterator[bytes]:
+        try:
+            # initial hello so FE knows the stream is alive
+            hello = json.dumps(
+                {"status": "connected", "at": _now_iso(), "detail": "global-sse"},
+                ensure_ascii=False,
+            )
+            yield f"event: job_status\ndata: {hello}\n\n".encode("utf-8")
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield b": keepalive\n\n"
+                    continue
+                ev = item.get("event") or "message"
+                payload = item.get("data") or {}
+                line = json.dumps(redact_obj(payload), ensure_ascii=False)
+                yield f"event: {ev}\ndata: {line}\n\n".encode("utf-8")
+        finally:
+            ORCH.unsubscribe(queue)
 
-async def profiles_desktop_jobs_stop(request: Request) -> JSONResponse:
-    pid = request.path_params["profile_id"]
-    did = request.path_params["desktop_id"]
-    path = _profile_path(pid)
-    if not path.is_file():
-        return api_error("NOT_FOUND", f"profile {pid} not found", 404)
-    try:
-        job = ORCH.stop_job(pid, did)
-    except KeyError:
-        return api_error("NOT_FOUND", "no job for profile/desktop", 404)
-    return JSONResponse({"ok": True, "job": job})
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 async def jobs_list(request: Request) -> JSONResponse:
@@ -1567,36 +2177,64 @@ async def jobs_create(request: Request) -> JSONResponse:
     pid = (body or {}).get("profileId") or (body or {}).get("profile_id")
     if not pid:
         return api_error("VALIDATION", "profileId required")
-    did = (body or {}).get("desktopId") or ""
-    if not did:
-        return api_error("VALIDATION", "desktopId required")
     path = _profile_path(str(pid))
     if not path.is_file():
         return api_error("NOT_FOUND", f"profile {pid} not found", 404)
     state = _read_state(path)
     protocol = resolve_user_protocol((body or {}).get("protocol"), state)
-    desktop_protos = state.get("desktopProtocols") or {}
-    if did in desktop_protos:
-        protocol = desktop_protos[did]
     mode = body.get("mode") or "live"
     try:
         timing = parse_job_timing_fields(body if isinstance(body, dict) else {})
     except ValueError as e:
         return api_error("VALIDATION", str(e))
     try:
-        job = ORCH.start_job(
-            str(pid), did, _resolve_live_state_path(path, state),
-            protocol=protocol, mode=mode,
+        job = await asyncio.to_thread(ORCH.start_job,
+            str(pid),
+            path,
+            protocol=protocol,
+            mode=mode,
             extra_args=timing["extraArgs"],
             interval_sec=timing["intervalSec"],
             traffic_sec=timing["trafficSec"],
             duration_sec=timing["durationSec"],
         )
+    except TypeError:
+        try:
+            job = await asyncio.to_thread(ORCH.start_job,
+                str(pid),
+                path,
+                protocol=protocol,
+                mode=mode,
+                extra_args=timing["extraArgs"],
+            )
+            job = dict(job)
+            job["intervalSec"] = timing["intervalSec"]
+            job["trafficSec"] = timing["trafficSec"]
+            job["durationSec"] = timing["durationSec"]
+            job["extraArgs"] = list(timing["extraArgs"])
+        except RuntimeError as e:
+            if str(e) == "PROFILE_IN_USE":
+                return api_error("PROFILE_IN_USE", "profile already has a running job", 409)
+            if str(e) == "USID_IN_USE":
+                return api_error(
+                    "USID_IN_USE",
+                    "desktop userServiceId already has a running job on another card",
+                    409,
+                )
+            return api_error("VALIDATION", str(e))
+        except ValueError as e:
+            return api_error("VALIDATION", str(e))
+        return JSONResponse({"ok": True, "job": job}, status_code=202)
     except RuntimeError as e:
-        err = str(e)
-        if err in ("JOB_IN_USE", "PROFILE_IN_USE"):
-            return api_error("JOB_IN_USE", "desktop already has a running job", 409)
-        return api_error("VALIDATION", err)
+        if str(e) == "PROFILE_IN_USE":
+            return api_error("PROFILE_IN_USE", "profile already has a running job", 409)
+        if str(e) == "USID_IN_USE":
+            return api_error(
+                "USID_IN_USE",
+                "desktop userServiceId already has a running job on another card",
+                409,
+            )
+        return api_error("VALIDATION", str(e))
     except ValueError as e:
         return api_error("VALIDATION", str(e))
     return JSONResponse({"ok": True, "job": job}, status_code=202)
@@ -1615,24 +2253,62 @@ async def jobs_stop(request: Request) -> JSONResponse:
     job = ORCH.get_job(jid)
     if not job:
         return api_error("NOT_FOUND", f"job {jid} not found", 404)
-    pid = job.get("profileId", "")
-    did = job.get("desktopId", "")
     try:
-        stopped = ORCH.stop_job(pid, did)
+        stopped = ORCH.stop_job(job["profileId"])
     except KeyError:
         return api_error("NOT_FOUND", "job already gone", 404)
     return JSONResponse({"ok": True, "job": stopped})
 
 
+async def jobs_events(request: Request) -> StreamingResponse:
+    jid = request.path_params["job_id"]
+    job = ORCH.get_job(jid)
+    if not job:
+        return api_error("NOT_FOUND", f"job {jid} not found", 404)
+    queue = ORCH.subscribe()
+
+    async def gen() -> AsyncIterator[bytes]:
+        try:
+            data = json.dumps(
+                {
+                    "jobId": jid,
+                    "profileId": job.get("profileId"),
+                    "status": job.get("status"),
+                    "at": _now_iso(),
+                },
+                ensure_ascii=False,
+            )
+            yield f"event: job_status\ndata: {data}\n\n".encode("utf-8")
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    yield b": keepalive\n\n"
+                    continue
+                payload = item.get("data") or {}
+                if payload.get("jobId") and payload.get("jobId") != jid:
+                    continue
+                ev = item.get("event") or "message"
+                line = json.dumps(redact_obj(payload), ensure_ascii=False)
+                yield f"event: {ev}\ndata: {line}\n\n".encode("utf-8")
+        finally:
+            ORCH.unsubscribe(queue)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
 async def logs_global(request: Request) -> JSONResponse:
-    pid = request.query_params.get("profileId") or ""
-    did = request.query_params.get("desktopId")
-    by_desktop = ORCH.recent_logs(profile_id=pid, desktop_id=did, limit=200)
-    safe = {
-        did: [{"at": x.get("at"), "line": str(x.get("line", ""))[:2000]} for x in lines]
-        for did, lines in by_desktop.items()
-    }
-    return JSONResponse({"ok": True, "logs": safe})
+    pid = request.query_params.get("profileId")
+    jid = request.query_params.get("jobId")
+    lines = ORCH.recent_logs(job_id=jid, profile_id=pid, limit=200)
+    safe = [{"at": x.get("at"), "line": str(x.get("line", ""))[:2000]} for x in lines]
+    return JSONResponse({"ok": True, "lines": safe})
 
 
 async def index(request: Request) -> Response:
@@ -1663,37 +2339,42 @@ routes = [
     Route("/api/system/info", endpoint=system_info),
     # X8 alias: OPEN gates mention /api/info
     Route("/api/info", endpoint=system_info),
+    # Access gate (8317-style): public status/setup/login; change requires current token
+    Route("/api/auth/status", endpoint=auth_status, methods=["GET"]),
+    Route("/api/auth/setup", endpoint=auth_setup, methods=["POST"]),
+    Route("/api/auth/login", endpoint=auth_login, methods=["POST"]),
+    Route("/api/auth/change", endpoint=auth_change, methods=["POST"]),
+    Route("/api/auth/disable", endpoint=auth_disable, methods=["POST"]),
     # X2 §3 profiles
     Route("/api/profiles", endpoint=profiles_list, methods=["GET"]),
     Route("/api/profiles", endpoint=profiles_create, methods=["POST"]),
     Route("/api/profiles/{profile_id}", endpoint=profiles_get, methods=["GET"]),
-    Route("/api/profiles/{profile_id}", endpoint=profiles_update, methods=["PUT"]),
+    Route("/api/profiles/{profile_id}", endpoint=profiles_patch, methods=["PATCH"]),
     Route("/api/profiles/{profile_id}", endpoint=profiles_delete, methods=["DELETE"]),
     Route("/api/profiles/{profile_id}/login", endpoint=profiles_login, methods=["POST"]),
     Route("/api/profiles/{profile_id}/desktops", endpoint=profiles_desktops, methods=["GET"]),
     Route("/api/profiles/{profile_id}/select-desktop", endpoint=profiles_select_desktop, methods=["POST"]),
     Route("/api/profiles/{profile_id}/jobs", endpoint=profiles_start_job, methods=["POST"]),
     Route("/api/profiles/{profile_id}/jobs/current", endpoint=profiles_stop_job, methods=["DELETE"]),
-    # Per-desktop jobs endpoints (primary)
-    Route("/api/profiles/{profile_id}/desktops/{desktop_id}/jobs", endpoint=profiles_desktop_jobs_get, methods=["GET"]),
-    Route("/api/profiles/{profile_id}/desktops/{desktop_id}/jobs", endpoint=profiles_desktop_jobs_start, methods=["POST"]),
-    Route("/api/profiles/{profile_id}/desktops/{desktop_id}/jobs/current", endpoint=profiles_desktop_jobs_stop, methods=["DELETE"]),
+    Route("/api/profiles/{profile_id}/desktop-logout", endpoint=profiles_desktop_logout, methods=["POST"]),
     Route("/api/profiles/{profile_id}/logs", endpoint=profiles_logs, methods=["GET"]),
     Route("/api/profiles/{profile_id}/logs", endpoint=profiles_logs_clear, methods=["DELETE"]),
+    Route("/api/profiles/{profile_id}/events", endpoint=profiles_events, methods=["GET"]),
+    # Global SSE for FE EventSource("/api/events") — X7
+    Route("/api/events", endpoint=events_global, methods=["GET"]),
+    # T_PM-compatible jobs collection (poll fallback)
     Route("/api/jobs", endpoint=jobs_list, methods=["GET"]),
     Route("/api/jobs", endpoint=jobs_create, methods=["POST"]),
     Route("/api/jobs/{job_id}", endpoint=jobs_get, methods=["GET"]),
     Route("/api/jobs/{job_id}/stop", endpoint=jobs_stop, methods=["POST"]),
+    Route("/api/jobs/{job_id}/events", endpoint=jobs_events, methods=["GET"]),
     Route("/api/logs", endpoint=logs_global, methods=["GET"]),
 ]
 
 if _STATIC_DIR.is_dir():
     routes.append(Mount("/static", app=StaticFiles(directory=str(_STATIC_DIR)), name="static"))
 
-async def not_found(request: Request, exc: HTTPException) -> Response:
-    return await index(request)
-
-app = Starlette(debug=os.environ.get("CMCC_WEBUI_DEBUG") == "1", routes=routes, exception_handlers={404: not_found})
+app = Starlette(debug=os.environ.get("CMCC_WEBUI_DEBUG") == "1", routes=routes)
 app.add_middleware(OptionalTokenMiddleware)
 
 

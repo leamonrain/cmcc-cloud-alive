@@ -37,7 +37,7 @@ def ensure_backend():
             os.dup2(log.fileno(), 1); os.dup2(log.fileno(), 2)
         venv_python = APPDEST + "/src/.venv/bin/python3"
         args = [venv_python, "-m", "uvicorn", "cmcc_cloud_alive.webui.app:app",
-                "--host", "127.0.0.1", "--port", PORT,
+                "--host", "::", "--port", PORT,
                 "--workers", "1", "--log-level", "info",
                 "--app-dir", APPDEST + "/src"]
         os.execve(venv_python, args, {"PATH": APPDEST + "/src/.venv/bin:/var/apps/python312/target/bin:/usr/local/bin:/usr/bin",

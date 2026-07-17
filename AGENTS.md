@@ -80,9 +80,11 @@ The real `Orchestrator` requires `CMCC_WEBUI_ALLOW_LIVE=1` (checked by `live_all
 
 ### FNOS lifecycle (TRIM_* env vars)
 
-`fpk/cmd/main` is the FNOS service manager entry. FNOS injects `TRIM_PKGVAR`, `TRIM_SERVICE_PORT`, etc. as env vars.
+`fpk/cmd/main` is the FNOS service manager entry. FNOS injects `TRIM_PKGVAR`, `TRIM_SERVICE_PORT`, `TRIM_APPDEST`, etc. as env vars.
 
 **Key quirk:** The script uses `test -d /proc/$PID` for PID-alive checks, **not** `kill -0`. Reason: `kill -0` on a root-owned process fails with EPERM when called by FNOS as non-root (CMCCCloudAlive user). The `/proc` check works for any user. This also applies to any agent writing FNOS lifecycle scripts.
+
+**Path resolution:** `cmd/main` now uses `TRIM_APPDEST` to derive app paths (uvicorn binary, source directory) and `TRIM_PKGVAR` for data/pid files. This matches `proxy.py` and `index.cgi` which use `/var/apps/CMCCCloudAlive/target/`. Do not hardcode `/vol2/@appcenter/...` paths.
 
 ### No tests
 
@@ -94,7 +96,9 @@ The `tests/` directory is gitignored. There are no unit tests. The project relie
 - `fpk/cmd/install_callback` creates a venv via `venv.create()` and `pip install -r src/requirements.txt`
 - `fpk/cmd/config/privilege` sets `run-as: package` (FNOS runs lifecycle scripts as root)
 - CGI proxy at `fpk/app/ui/proxy.py` is a fallback entry (PHP-style CGI → urllib → `127.0.0.1:18080`) — not the primary path
+- uvicorn binds to `::` (dual-stack IPv6+IPv4) in both `cmd/main` and `proxy.py` — ensures FNOS reverse proxy works regardless of IP version
 - `fpk/cmd/main` uses `port_in_use()` / `pid_alive()` functions with `/proc` check (not `kill -0`) — see quirk above
+- `fpk/cmd/main` derives paths from `TRIM_APPDEST` env var — do not hardcode `/vol2/@appcenter/...` paths
 
 ## Docker
 

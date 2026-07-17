@@ -1,10 +1,12 @@
 #!/bin/bash
-set -e
+# shellcheck disable=SC3040
+set -euo pipefail
 PORT="${TRIM_SERVICE_PORT:-18080}"
-PKGVAR="${TRIM_PKGVAR:-/vol2/@appdata/CMCCCloudAlive}"
+APPDEST="${TRIM_APPDEST:-/var/apps/CMCCCloudAlive/target}"
+PKGVAR="${TRIM_PKGVAR:-${APPDEST}/../../var}"
 PIDFILE="$PKGVAR/uvicorn.pid"
-UVICORN_BIN="/vol2/@appcenter/CMCCCloudAlive/src/.venv/bin/uvicorn"
-APPDIR="/vol2/@appcenter/CMCCCloudAlive/src"
+UVICORN_BIN="$APPDEST/src/.venv/bin/uvicorn"
+APPDIR="$APPDEST/src"
 export CMCC_ALIVE_HOME="$PKGVAR"
 export CMCC_WEBUI_ALLOW_LIVE=1
 
@@ -32,7 +34,7 @@ case "$1" in
     PID_OLD=$(cat "$PIDFILE" 2>/dev/null) || true
     if ! pid_alive "$PID_OLD"; then
       nohup "$UVICORN_BIN" cmcc_cloud_alive.webui.app:app \
-        --host 127.0.0.1 --port "$PORT" \
+        --host :: --port "$PORT" \
         --workers 1 --log-level info > "$PKGVAR/uvicorn.log" 2>&1 &
       echo $! > "$PIDFILE"
     fi

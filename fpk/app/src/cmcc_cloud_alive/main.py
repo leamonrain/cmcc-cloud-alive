@@ -1967,6 +1967,74 @@ def cmd_product_zte_display_check(args):
     _print(report)
 
 
+def cmd_simple_keepalive(args):
+    """Non-interactive entry used by WebUI LIVE child.
+
+    Strictly aligns with simple menu path:
+    _simple_run_keepalive -> _simple_forced_keepalive(hand-picked ZTE|SCG).
+    Never routes through product-keepalive interactive / desktop HTTP keepalive.
+    """
+    state_path = args.state
+    target = (
+        getattr(args, "user_service_id", None)
+        or getattr(args, "userServiceId", None)
+        or ""
+    )
+    target = str(target or "").strip()
+    if not target:
+        try:
+            st = core.load_state(state_path)
+        except Exception:
+            st = {}
+        if isinstance(st, dict):
+            target = str(
+                st.get("userServiceId")
+                or st.get("selectedUserServiceId")
+                or st.get("user_service_id")
+                or ""
+            ).strip()
+    if not target:
+        raise core.CmccError(
+            "simple-keepalive requires --user-service-id or state selectedUserServiceId"
+        )
+    protocol = str(getattr(args, "protocol", None) or "ZTE").upper()
+    if protocol not in ("ZTE", "SCG"):
+        protocol = "ZTE"
+    interval_minutes = int(getattr(args, "interval_minutes", None) or 5)
+    traffic_seconds = int(getattr(args, "traffic_seconds", None) or 60)
+    mode = str(getattr(args, "mode", None) or "2")
+    if mode not in ("1", "2"):
+        ml = mode.lower()
+        if ml in ("once", "single", "1", "one"):
+            mode = "1"
+        else:
+            mode = "2"
+    try:
+        cloud.select_desktop(target, state_path, skip_target_assert=True)
+    except TypeError:
+        try:
+            cloud.select_desktop(target, state_path)
+        except Exception as err:
+            print(f"[simple-keepalive] select_desktop warn: {err}", flush=True)
+    except Exception as err:
+        print(f"[simple-keepalive] select_desktop warn: {err}", flush=True)
+    print(
+        f"[simple-keepalive] start protocol={protocol} mode={mode} "
+        f"interval_minutes={interval_minutes} traffic_seconds={traffic_seconds} "
+        f"userServiceId={target}",
+        flush=True,
+    )
+    _simple_run_keepalive(
+        target,
+        state_path,
+        protocol,
+        interval_minutes,
+        traffic_seconds,
+        mode,
+    )
+    return 0
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         description="移动云电脑保活工具：普通用户直接运行 python3 -m cmcc_cloud_alive，然后按中文提示操作。",
@@ -2438,6 +2506,40 @@ def build_parser():
     p.add_argument("--user-service-id", default=None, help="override the selected user service id")
     p.add_argument("--vm-id", default=None, help="override the target desktop vmId")
     p.set_defaults(func=cmd_product_keepalive)
+
+    p = sub.add_parser(
+        "simple-keepalive",
+        help="WebUI/non-interactive simple keepalive (ZTE/SCG forced)",
+    )
+    p.add_argument(
+        "--user-service-id",
+        default=None,
+        help="target cloud PC userServiceId",
+    )
+    p.add_argument(
+        "--protocol",
+        default="ZTE",
+        choices=["ZTE", "SCG", "zte", "scg"],
+        help="hand-picked protocol",
+    )
+    p.add_argument(
+        "--interval-minutes",
+        type=int,
+        default=5,
+        help="keepalive interval minutes",
+    )
+    p.add_argument(
+        "--traffic-seconds",
+        type=int,
+        default=60,
+        help="single-round traffic seconds",
+    )
+    p.add_argument(
+        "--mode",
+        default="2",
+        help="1=single round, 2=forever",
+    )
+    p.set_defaults(func=cmd_simple_keepalive)
 
     p = sub.add_parser("product-zte-material-check")
     p.add_argument("--state", default=None, help="override the state directory")
