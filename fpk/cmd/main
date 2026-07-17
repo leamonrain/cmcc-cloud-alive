@@ -1,50 +1,61 @@
 #!/bin/bash
 set -e
 PORT="${TRIM_SERVICE_PORT:-18080}"
-PIDFILE="${TRIM_PKGVAR}/uvicorn.pid"
+PKGVAR="${TRIM_PKGVAR:-/vol2/@appdata/CMCCCloudAlive}"
+PIDFILE="$PKGVAR/uvicorn.pid"
 UVICORN_BIN="/vol2/@appcenter/CMCCCloudAlive/src/.venv/bin/uvicorn"
 APPDIR="/vol2/@appcenter/CMCCCloudAlive/src"
-export CMCC_ALIVE_HOME="${TRIM_PKGVAR}"
+export CMCC_ALIVE_HOME="$PKGVAR"
+export CMCC_WEBUI_ALLOW_LIVE=1
+
+pid_alive() {
+  local pid="$1"
+  [ -n "$pid" ] && [ -d "/proc/$pid" ]
+}
+
+port_pid() {
+  ss -tlnp | grep ":$PORT " | sed 's/.*pid=\([0-9]*\),.*/\1/'
+}
+
+port_in_use() {
+  ss -tlnp | grep -q ":$PORT "
+}
 
 case "$1" in
   start)
-    echo "Starting $TRIM_APPNAME $TRIM_APPVER" > "$TRIM_TEMP_LOGFILE"
     cd "$APPDIR"
-    if [ ! -f "$PIDFILE" ] || ! kill -0 $(cat "$PIDFILE") 2>/dev/null; then
+    if port_in_use; then
+      PID=$(port_pid)
+      [ -n "$PID" ] && echo "$PID" > "$PIDFILE"
+      exit 0
+    fi
+    PID_OLD=$(cat "$PIDFILE" 2>/dev/null) || true
+    if ! pid_alive "$PID_OLD"; then
       nohup "$UVICORN_BIN" cmcc_cloud_alive.webui.app:app \
         --host 127.0.0.1 --port "$PORT" \
-        --workers 1 --log-level info > "$TRIM_PKGVAR/uvicorn.log" 2>&1 &
+        --workers 1 --log-level info > "$PKGVAR/uvicorn.log" 2>&1 &
       echo $! > "$PIDFILE"
-      echo "Started uvicorn (PID $(cat $PIDFILE))"
-    else
-      echo "Already running (PID $(cat $PIDFILE))"
     fi
     ;;
   stop)
-    echo "Stopping $TRIM_APPNAME" > "$TRIM_TEMP_LOGFILE"
-    if [ -f "$PIDFILE" ]; then
-      kill $(cat "$PIDFILE") 2>/dev/null || true
-      rm -f "$PIDFILE"
-      echo "Stopped"
-    fi
+    PID=$(cat "$PIDFILE" 2>/dev/null) || true
+    pid_alive "$PID" && kill "$PID" 2>/dev/null || true
+    port_in_use && fuser -k "$PORT/tcp" 2>/dev/null || true
+    rm -f "$PIDFILE"
     ;;
   status)
-    if [ -f "$PIDFILE" ] && kill -0 $(cat "$PIDFILE") 2>/dev/null; then
-      echo "Running (PID $(cat $PIDFILE))"
-      exit 0
+    if [ -f "$PIDFILE" ]; then
+      PID=$(cat "$PIDFILE" 2>/dev/null) || true
+      pid_alive "$PID" && exit 0
     fi
-    echo "Not running"
+    if port_in_use; then
+      PID=$(port_pid)
+      [ -n "$PID" ] && echo "$PID" > "$PIDFILE" && exit 0
+    fi
     exit 3
     ;;
   reload)
-    echo "Reloading $TRIM_APPNAME" > "$TRIM_TEMP_LOGFILE"
-    if [ -f "$PIDFILE" ] && kill -0 $(cat "$PIDFILE") 2>/dev/null; then
-      kill -HUP $(cat "$PIDFILE") 2>/dev/null || true
-      echo "Reloaded"
-    fi
-    ;;
-  *)
-    echo "Unknown command: $1" > "$TRIM_TEMP_LOGFILE"
-    exit 1
+    PID=$(cat "$PIDFILE" 2>/dev/null) || true
+    pid_alive "$PID" && kill -HUP "$PID" 2>/dev/null || true
     ;;
 esac

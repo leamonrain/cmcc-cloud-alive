@@ -90,6 +90,8 @@ function renderAccounts(){
       bodyHtml='<div class="pc-list" style="padding:20px;text-align:center;color:#999;font-size:13px">'+(user?'暂无云电脑，<button class="btn btn-sm btn-outline" onclick="refreshDesktops(\''+esc(pid)+'\')">刷新</button>':'请先添加账号')+'</div>';
     }
     return'<div class="acct-card" data-pid="'+esc(pid)+'"><div class="acct-head"><div class="acct-avatar" style="background:'+randColor(pid)+'">'+esc(initial)+'</div><div class="acct-info"><div class="acct-name">'+esc(name)+'</div><div class="acct-sub">'+esc(user||'未登录')+' · '+dl.length+'台</div></div><div style="display:flex;gap:4px">'+(dl.length?'<button class="btn btn-sm btn-outline" onclick="refreshDesktops(\''+esc(pid)+'\')" title="刷新电源状态">🔄</button>':'')+'<span class="badge badge-'+esc(p.jobStatus||"idle")+'">'+esc(statusLabel(p.jobStatus||"idle"))+'</span><button class="btn btn-sm btn-outline" onclick="delAccount(\''+esc(pid)+'\')">✕</button></div></div>'+bodyHtml+
+    '<div class="acct-actions" style="padding:8px 12px;border-top:1px solid var(--border,#eee)">'+
+    '<button class="btn btn-primary btn-sm" style="width:100%;justify-content:center" onclick="startKeepalive(\''+esc(pid)+'\')"'+(state.busy[pid]?' disabled':'')+'>🚀 启动保活</button></div>'+
     '</div>'
   }).join("");
   $$('.pc-cb input[type="checkbox"]').forEach(function(cb){

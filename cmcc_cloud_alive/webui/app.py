@@ -411,6 +411,20 @@ class FakeOrchestrator:
                 result[did] = list(self._log_buffers.get(jid, []))[-limit:]
             return result
 
+    def clear_logs(self, profile_id: str, desktop_id: str = "") -> Dict[str, Any]:
+        cnt = 0
+        with self._lock:
+            prefix = profile_id + ":"
+            for key, jid in list(self._by_key.items()):
+                if not key.startswith(prefix):
+                    continue
+                if desktop_id and key != profile_id + ":" + desktop_id:
+                    continue
+                buf = self._log_buffers.get(jid, [])
+                cnt += len(buf)
+                self._log_buffers[jid] = []
+        return {"cleared": cnt}
+
 
 def _load_orchestrator() -> Any:
     try:
@@ -1611,7 +1625,7 @@ async def jobs_stop(request: Request) -> JSONResponse:
 
 
 async def logs_global(request: Request) -> JSONResponse:
-    pid = request.query_params.get("profileId")
+    pid = request.query_params.get("profileId") or ""
     did = request.query_params.get("desktopId")
     by_desktop = ORCH.recent_logs(profile_id=pid, desktop_id=did, limit=200)
     safe = {

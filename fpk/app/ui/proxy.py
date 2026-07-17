@@ -41,7 +41,8 @@ def ensure_backend():
                 "--workers", "1", "--log-level", "info",
                 "--app-dir", APPDEST + "/src"]
         os.execve(venv_python, args, {"PATH": APPDEST + "/src/.venv/bin:/var/apps/python312/target/bin:/usr/local/bin:/usr/bin",
-                  "HOME": "/root", "LANG": "zh_CN.UTF-8"})
+                  "HOME": "/root", "LANG": "zh_CN.UTF-8",
+                  "CMCC_WEBUI_ALLOW_LIVE": "1"})
 
 def main():
     ensure_backend()
