@@ -10,8 +10,14 @@ if [ ! -d src/.venv ]; then
 fi
 . src/.venv/bin/activate
 
-# Install dependencies
-pip install -r src/requirements.txt
+# Install dependencies from bundled wheels (offline-first)
+if [ -d wheels ] && ls wheels/*.whl 1>/dev/null 2>&1; then
+    pip install --no-index --find-links=wheels -r src/requirements.txt --upgrade
+    rm -rf wheels
+else
+    # Fallback to online install
+    pip install -r src/requirements.txt
+fi
 
 # Ensure log directory
 mkdir -p "$TRIM_PKGVAR"/logs 2>/dev/null || true
