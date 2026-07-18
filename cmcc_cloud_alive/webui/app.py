@@ -783,6 +783,7 @@ def _public_profile(profile_id: str, state: Dict[str, Any], path: Path) -> Dict[
         "desktopLabel": state.get("desktopLabel") or state.get("desktopName") or "",
         "userServiceId": state.get("userServiceId") or "",
         "spuCode": spu,
+        "protocol": state.get("protocol") or "",  # user-chosen protocol
         "protocolHint": official,
         "lastOfficialProtocol": official,
         "hasPassword": bool(state.get("password")),
@@ -1239,7 +1240,8 @@ async def profiles_patch(request: Request) -> JSONResponse:
                 proto = "ZTE"
             if proto == "SANGFOR":
                 proto = "SCG"
-            if proto in ("ZTE", "SCG") and state.get("protocol") != proto:
+            # HARD_GATE#871c: user choice; V3, SCG, ZTE all valid
+            if proto in ("ZTE", "SCG", "V3") and state.get("protocol") != proto:
                 state["protocol"] = proto
                 changed = True
     if not changed and "clientProfile" not in body:
@@ -1727,6 +1729,12 @@ async def profiles_select_desktop(request: Request) -> JSONResponse:
     if official:
         state["lastOfficialProtocol"] = official
         state["protocolHint"] = official
+    # Also persist user-chosen protocol independently (not just official hint).
+    body_protocol = body.get("protocol") or ""
+    if body_protocol:
+        bp = str(body_protocol).strip().upper()
+        if bp in ("ZTE", "SCG", "V3"):
+            state["protocol"] = bp
     # HARD_GATE#851: keep draft; only save-and-start commits to timeline
     state["updatedAt"] = _now_iso()
     _write_state(path, state)
