@@ -38,6 +38,8 @@ def simple_alive_v3(
     # its try/except, so a transient 4015 here is non-fatal.
     try:
         item = cloud.status(target, state_path)
+        state_text = "开机运行中" if cloud.is_running(item) else "已关机"
+        print(f"[V3] 云桌面状态：{state_text}", flush=True)
         if not cloud.is_running(item):
             print("云电脑未开机，正在开机...", flush=True)
             cag_boot.ensure_running(target, state_path, 60, 180)
@@ -45,6 +47,7 @@ def simple_alive_v3(
         else:
             print("云电脑已运行", flush=True)
     except Exception as e:
+        print(f"[V3] 云桌面状态：查询中… ({e})", flush=True)
         print(f"[V3] 初始状态检查跳过: {e}，内层循环会自动处理", flush=True)
 
     try:
@@ -139,6 +142,8 @@ def simple_alive_v3(
                     raise core.CmccError("token失效")
 
             item = cloud.status(target, state_path)
+            state_text = "开机运行中" if cloud.is_running(item) else "已关机"
+            print(f"[{core.short_time()}] 云桌面状态：{state_text}", flush=True)
             if not cloud.is_running(item):
                 shutdowns += 1
                 print(f"[{core.short_time()}] 桌面已关机(第{shutdowns}次)，正在开机...", flush=True)
@@ -167,6 +172,8 @@ def simple_alive_v3(
 
                 token.ensure_token(state_path)
                 item = cloud.status(target, state_path)
+                state_text = "开机运行中" if cloud.is_running(item) else "已关机"
+                print(f"[{core.short_time()}] 云桌面状态：{state_text}", flush=True)
                 if not cloud.is_running(item):
                     shutdowns += 1
                     print(f"[{core.short_time()}] 桌面已关机(第{shutdowns}次)，退出当前会话", flush=True)
