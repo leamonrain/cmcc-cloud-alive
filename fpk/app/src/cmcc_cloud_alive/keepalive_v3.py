@@ -24,21 +24,28 @@ def simple_alive_v3(
         auth.password_login(username, password, state_path, save_password=True)
 
     if target:
-        cloud.select_desktop(target, state_path)
+        # Already selected by cmd_simple_keepalive (main.py line ~2013); skip redundant
+        # select_desktop which calls listClouds API — that fails with 4015 on restart
+        # when the shared acct file's token hasn't been accepted yet.
+        print(f"已选择云电脑 userServiceId={target}", flush=True)
     else:
         items = cloud.list_desktops(state_path)
         target = str(items[0]["userServiceId"])
         cloud.select_desktop(target, state_path)
+        print(f"已选择云电脑 userServiceId={target}", flush=True)
 
-    print(f"已选择云电脑 userServiceId={target}", flush=True)
-
-    item = cloud.status(target, state_path)
-    if not cloud.is_running(item):
-        print("云电脑未开机，正在开机...", flush=True)
-        cag_boot.ensure_running(target, state_path, 60, 180)
-        print("开机完成", flush=True)
-    else:
-        print("云电脑已运行", flush=True)
+    # Initial status check; the inner loop re-checks and handles failures inside
+    # its try/except, so a transient 4015 here is non-fatal.
+    try:
+        item = cloud.status(target, state_path)
+        if not cloud.is_running(item):
+            print("云电脑未开机，正在开机...", flush=True)
+            cag_boot.ensure_running(target, state_path, 60, 180)
+            print("开机完成", flush=True)
+        else:
+            print("云电脑已运行", flush=True)
+    except Exception as e:
+        print(f"[V3] 初始状态检查跳过: {e}，内层循环会自动处理", flush=True)
 
     try:
         disc = desktop_keepalive.disconnect_time(target, state_path)
