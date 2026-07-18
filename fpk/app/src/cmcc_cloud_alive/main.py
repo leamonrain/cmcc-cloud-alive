@@ -1998,7 +1998,7 @@ def cmd_simple_keepalive(args):
             "simple-keepalive requires --user-service-id or state selectedUserServiceId"
         )
     protocol = str(getattr(args, "protocol", None) or "ZTE").upper()
-    if protocol not in ("ZTE", "SCG"):
+    if protocol not in ("ZTE", "SCG", "V3"):
         protocol = "ZTE"
     interval_minutes = int(getattr(args, "interval_minutes", None) or 5)
     traffic_seconds = int(getattr(args, "traffic_seconds", None) or 60)
@@ -2519,7 +2519,7 @@ def build_parser():
     p.add_argument(
         "--protocol",
         default="ZTE",
-        choices=["ZTE", "SCG", "zte", "scg"],
+        choices=["ZTE", "SCG", "V3", "zte", "scg", "v3"],
         help="hand-picked protocol",
     )
     p.add_argument(
@@ -2937,10 +2937,42 @@ def _simple_forced_keepalive(target, state_path, protocol, traffic_seconds):
 
     if str(protocol).upper() == "SCG":
         return _run_scg_keepalive(args, auth, route, vm_id, report, started)
+    if str(protocol).upper() == "V3":
+        # V3 is handled directly in _simple_run_keepalive (continuous session).
+        # This branch is a safety guard: V3 should not reach _simple_forced_keepalive.
+        report["error"] = "V3 must be called via _simple_run_keepalive, not _simple_forced_keepalive"
+        report["stage"] = "v3-not-supported"
+        report["duration"] = round(time.monotonic() - started, 3)
+        _emit_product_report(args, report)
+        return report
     return _run_zte_keepalive(args, auth, route, vm_id, report, started)
 
 
 def _simple_run_keepalive(target, state_path, protocol, interval_minutes, traffic_seconds, mode):
+    # V3: continuous CAG TCP/TLS persistent session, not round-based.
+    # Called from CLI REPL or WebUI Orch child; runs until SIGTERM/KeyboardInterrupt.
+    if str(protocol).upper() == "V3":
+        from .keepalive_v3 import simple_alive_v3
+        _simple_ensure_token(state_path, "V3保活启动前")
+        print("\n[V3] 启动CAG TCP/TLS持久连接保活（挤占效果）...", flush=True)
+        try:
+            result = simple_alive_v3(
+                username=None,
+                password=None,
+                state_path=state_path,
+                user_service_id=target,
+                run_seconds=0,  # forever (parent sends SIGTERM)
+                connect_str_renew_minutes=int(interval_minutes or 30),
+            )
+            print(
+                f"\nV3保活结束：运行{result['elapsed']}秒，{result['rounds']}轮，"
+                f"关机{result.get('shutdowns', 0)}次",
+                flush=True,
+            )
+        except KeyboardInterrupt:
+            print("\nV3保活收到中断，已退出。", flush=True)
+        return
+
     interval_seconds = max(1, int(interval_minutes) * 60)
     traffic_seconds = max(1, int(traffic_seconds))
     _simple_ensure_token(state_path, "首次开机检查前")

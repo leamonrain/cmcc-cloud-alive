@@ -1122,6 +1122,7 @@ function wireAccessGate() {
     if (!raw) return "未选";
     const u = raw;
     if (u === "ZTE" || u === "ZX" || u === "ZHONGXING") return "中兴";
+    if (u === "V3") return "V3";
     return "深信服";
   }
 
@@ -1173,7 +1174,7 @@ function wireAccessGate() {
       var u = String(v).toUpperCase();
       if (u === "ZX" || u === "ZHONGXING") u = "ZTE";
       if (u === "SANGFOR") u = "SCG";
-      if (u === "ZTE" || u === "SCG") return u;
+      if (u === "ZTE" || u === "SCG" || u === "V3") return u;
     }
     return "ZTE"; /* historical empty-only fallback, not product default force */
   }
@@ -2065,6 +2066,11 @@ function wireAccessGate() {
       '" data-pid="' +
       esc(pid) +
       '" data-key="protocol" data-val="SCG">SCG</button>' +
+      '<button type="button" class="seg-btn' +
+      (String(protocol).toUpperCase() === "V3" ? " active" : "") +
+      '" data-pid="' +
+      esc(pid) +
+      '" data-key="protocol" data-val="V3">V3</button>' +
       "</div></div>" +
       "</div>" +
       "</div>" +
@@ -3181,6 +3187,7 @@ function setComposerMsg(text, kind) {
     let off = "";
     if (hint === "ZX" || hint === "ZHONGXING") off = "ZTE";
     else if (hint === "SANGFOR") off = "SCG";
+    else if (hint === "V3") off = "V3";
     else if (hint === "ZTE" || hint === "SCG") off = hint;
     const spu = d.spuCode || d.spu_code || "";
     if (off) {

@@ -185,7 +185,7 @@ class FakeBackend:
         self.job_id = job_id
         self.stop_evt = stop_evt
         self.protocol = (protocol or "ZTE").upper()
-        if self.protocol not in ("ZTE", "SCG"):
+        if self.protocol not in ("ZTE", "SCG", "V3"):
             self.protocol = "ZTE"
         self.traffic_sec = int(traffic_sec) if traffic_sec and int(traffic_sec) > 0 else 60
         self.user_service_id = user_service_id or "dry-run-svc"
@@ -226,6 +226,15 @@ class FakeBackend:
             )
             done = (
                 f"[{self._stamp()}] 第{round_no}轮SCG保活完成 "
+                f"kind={kind} ok=True stage={stage_done} duration={duration_done}s"
+            )
+        elif proto == "V3":
+            hand = (
+                f"[{self._stamp()}] 第{round_no}轮V3保活：CAG TCP/TLS隧道模式 "
+                f"duration={duration_cfg}s userServiceId={usid}"
+            )
+            done = (
+                f"[{self._stamp()}] 第{round_no}轮V3保活完成 "
                 f"kind={kind} ok=True stage={stage_done} duration={duration_done}s"
             )
         else:
@@ -389,7 +398,7 @@ class SubprocessBackend:
         if not usid:
             raise RuntimeError("state missing userServiceId/selectedUserServiceId")
         proto = (self.protocol or "ZTE").upper()
-        if proto not in ("ZTE", "SCG"):
+        if proto not in ("ZTE", "SCG", "V3"):
             proto = "ZTE"
         cmd = [
             sys.executable,
@@ -760,8 +769,8 @@ class Orchestrator:
         user_service_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         protocol = (protocol or "ZTE").upper()
-        if protocol not in ("ZTE", "SCG"):
-            raise ValueError("protocol must be ZTE or SCG")
+        if protocol not in ("ZTE", "SCG", "V3"):
+            raise ValueError("protocol must be ZTE, SCG or V3")
         mode = (mode or "live").lower()
         # #848: 永久(live)/单轮(once|single) 都走真子进程；仅显式 dry-run 走 FakeBackend
         if mode in ("dry-run", "dryrun", "fake", "sim", "simulate"):
@@ -878,17 +887,17 @@ class Orchestrator:
                 self._by_usid[usid] = job_id
             if account_key:
                 job["accountKey"] = account_key
-                if protocol in ("SCG", "ZTE") and mode == "live":
-                    # HARD_GATE#871d-proto-serial1: key includes protocol
-                    gk = gate_key or f"{account_key}|{protocol}"
-                    job["serialGateKey"] = gk
-                    self._account_scg_gate[gk] = {
-                        "jobId": job_id,
-                        "t0": time.time(),
-                        "profileId": profile_id,
-                        "protocol": protocol,
-                        "accountKey": account_key,
-                    }
+            if protocol in ("SCG", "ZTE", "V3") and mode == "live":
+                # HARD_GATE#871d-proto-serial1: key includes protocol
+                gk = gate_key or f"{account_key}|{protocol}"
+                job["serialGateKey"] = gk
+                self._account_scg_gate[gk] = {
+                    "jobId": job_id,
+                    "t0": time.time(),
+                    "profileId": profile_id,
+                    "protocol": protocol,
+                    "accountKey": account_key,
+                }
             self._log_buffers.setdefault(job_id, [])
             stop_evt = threading.Event()
             self._stop_events[job_id] = stop_evt

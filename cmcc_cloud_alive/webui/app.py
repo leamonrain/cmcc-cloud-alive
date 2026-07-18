@@ -465,8 +465,8 @@ class FakeOrchestrator:
         duration_sec: Optional[int] = None,
     ) -> Dict[str, Any]:
         protocol = (protocol or "ZTE").upper()
-        if protocol not in ("ZTE", "SCG"):
-            raise ValueError("protocol must be ZTE or SCG")
+        if protocol not in ("ZTE", "SCG", "V3"):
+            raise ValueError("protocol must be ZTE, SCG or V3")
         with self._lock:
             existing = self._by_profile.get(profile_id)
             if existing and self._jobs.get(existing, {}).get("status") == "running":
@@ -1749,7 +1749,7 @@ def resolve_user_protocol(body_protocol=None, state=None, fallback="ZTE"):
             u = "ZTE"
         if u == "SANGFOR":
             u = "SCG"
-        if u in ("ZTE", "SCG"):
+        if u in ("ZTE", "SCG", "V3"):
             return u
     return str(fallback or "ZTE").upper()
 
