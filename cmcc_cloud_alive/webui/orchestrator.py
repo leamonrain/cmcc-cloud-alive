@@ -71,6 +71,56 @@ def _jobs_dir() -> Path:
     return d
 
 
+def _job_definition_path(job_id: str) -> Path:
+    """Persisted job definition (survives NAS reboot / uvicorn restart).
+
+    Written when a live job starts, removed when the job stops. On startup
+    ``Orchestrator.restore_jobs()`` re-launches every remaining definition so
+    keepalive continues automatically after a reboot.
+    """
+    return _jobs_dir() / job_id / "definition.json"
+
+
+_DEFINITION_KEYS = (
+    "id",
+    "profileId",
+    "statePath",
+    "protocol",
+    "mode",
+    "extraArgs",
+    "intervalSec",
+    "trafficSec",
+    "durationSec",
+    "userServiceId",
+)
+
+
+def _persist_definition(job: Dict[str, Any]) -> None:
+    """Write job definition to disk (best-effort, non-fatal)."""
+    try:
+        path = _job_definition_path(str(job.get("id") or ""))
+        if not str(job.get("id")):
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {k: job.get(k) for k in _DEFINITION_KEYS}
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as e:  # pragma: no cover — disk issues only
+        print(f"[orch] persist definition failed: {e}", file=sys.stderr, flush=True)
+
+
+def _drop_definition(job_id: str) -> None:
+    """Remove persisted job definition so it is not restored on next start."""
+    try:
+        path = _job_definition_path(job_id)
+        if path.is_file():
+            path.unlink()
+    except OSError:
+        pass
+
+
 def _redact_line(line: str) -> str:
     """Strip obvious secret-ish tokens from log lines (never echo passwords)."""
     low = line.lower()
@@ -437,9 +487,30 @@ class SubprocessBackend:
         # Ensure child does not inherit a webui token requirement that confuses CLI
         return env
 
+    def _stale_lock_file(self) -> bool:
+        """True when the lock's owner PID is dead; unreadable (foreign uid)
+        locks count as stale — under fnOS lifecycle the app always runs as
+        the package user, so a different-owner lock can only be leftover."""
+        try:
+            text = self.lock_path.read_text(encoding="ascii", errors="ignore").strip()
+        except OSError:
+            text = ""
+        if text.isdigit() and os.path.isdir(f"/proc/{int(text)}"):
+            return False
+        return True
+
     def _acquire_lock(self) -> None:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(self.lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fd = os.open(str(self.lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+        except PermissionError:
+            if not self._stale_lock_file():
+                raise
+            try:
+                self.lock_path.unlink()
+            except OSError:
+                raise
+            fd = os.open(str(self.lock_path), os.O_CREAT | os.O_RDWR, 0o600)
         try:
             import fcntl
 
@@ -510,6 +581,7 @@ class SubprocessBackend:
                     detail=f"child exited rc={rc}",
                     exit_code=rc,
                     status=status,
+                    drop_definition=False,
                 )
         finally:
             try:
@@ -914,6 +986,13 @@ class Orchestrator:
                     user_service_id=(user_service_id or _usid_from_state(state_path)),
                 )
             else:
+                # Fail before spawn: a doomed child would crash after launch
+                # and drop the definition (crash keeps it for restore retry).
+                try:
+                    with open(state_path, "r", encoding="utf-8") as _sf:
+                        pass
+                except OSError as e:
+                    raise RuntimeError(f"STATE_UNREADABLE: {e}") from e
                 jdir = _jobs_dir() / job_id
                 jdir.mkdir(parents=True, exist_ok=True)
                 log_path = jdir / "worker.log"
@@ -937,7 +1016,10 @@ class Orchestrator:
                     self._jobs[job_id]["pid"] = pid
                     self._jobs[job_id]["detail"] = f"live subprocess pid={pid}"
                 job_out = dict(self._jobs[job_id])
+            # Persist definition so NAS reboot / uvicorn restart auto-resumes.
+            _persist_definition(self._jobs[job_id])
         except Exception as e:
+            _drop_definition(job_id)
             with self._lock:
                 j = self._jobs.get(job_id)
                 if j:
@@ -1034,6 +1116,68 @@ class Orchestrator:
 
         return self._mark_stopped(jid, detail="stopped by API")
 
+    def restore_jobs(self) -> None:
+        """Relaunch keepalive jobs that were running before this process died.
+
+        NAS reboot / uvicorn restart wipes the in-memory job table; persisted
+        ``jobs/<job_id>/definition.json`` files survive on disk. Each definition
+        is re-launched through the normal ``start_job`` path (same account-gate
+        and lock semantics as a manual start). A successful restore drops the
+        stale definition (the new job persists its own); a failed restore keeps
+        it so the next restart retries. Dry-run jobs are not restored.
+        """
+        try:
+            entries = sorted(p for p in _jobs_dir().iterdir() if p.is_dir())
+        except OSError:
+            return
+        for jdir in entries:
+            defn = jdir / "definition.json"
+            if not defn.is_file():
+                continue
+            job_id = jdir.name
+            try:
+                d = json.loads(defn.read_text(encoding="utf-8"))
+            except Exception as e:
+                print(f"[restore] {job_id}: unreadable definition: {e}", file=sys.stderr, flush=True)
+                _drop_definition(job_id)
+                continue
+            profile_id = str(d.get("profileId") or "")
+            state_path = str(d.get("statePath") or "")
+            if str(d.get("mode") or "") in ("dry-run", "dryrun", "fake", "sim"):
+                _drop_definition(job_id)
+                continue
+            if not profile_id or not state_path or not Path(state_path).is_file():
+                print(f"[restore] {job_id}: stale definition (profile/state missing), dropped", file=sys.stderr, flush=True)
+                _drop_definition(job_id)
+                continue
+            try:
+                self.start_job(
+                    profile_id,
+                    Path(state_path),
+                    protocol=str(d.get("protocol") or "ZTE"),
+                    extra_args=d.get("extraArgs") or None,
+                    mode=str(d.get("mode") or "live"),
+                    interval_sec=d.get("intervalSec"),
+                    traffic_sec=d.get("trafficSec"),
+                    duration_sec=d.get("durationSec"),
+                    user_service_id=d.get("userServiceId") or None,
+                )
+                _drop_definition(job_id)
+                self._append_log(
+                    self._sticky_key(profile_id),
+                    f"[restore] 已自动恢复保活 job_id={job_id} (重启前仍在保活)",
+                )
+            except Exception as e:
+                print(
+                    f"[restore] {job_id} profile={profile_id} failed: {e} (retry next restart)",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                self._append_log(
+                    self._sticky_key(profile_id),
+                    f"[restore] 自动恢复失败: {e}",
+                )
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -1076,6 +1220,7 @@ class Orchestrator:
         detail: str,
         exit_code: Optional[int] = None,
         status: str = "stopped",
+        drop_definition: bool = True,
     ) -> Dict[str, Any]:
         with self._lock:
             job = self._jobs.get(job_id)
@@ -1107,6 +1252,8 @@ class Orchestrator:
             out = dict(job)
             self._backends.pop(job_id, None)
             self._stop_events.pop(job_id, None)
+        if drop_definition:
+            _drop_definition(job_id)
         self._append_log(job_id, f"[orch] {detail}")
         self._emit(
             "job_status",

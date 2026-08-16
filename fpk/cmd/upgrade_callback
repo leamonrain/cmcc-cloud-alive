@@ -1,6 +1,11 @@
 #!/bin/bash
 set -e
 echo "Upgrading $TRIM_APPNAME $TRIM_APPVER..." > "$TRIM_TEMP_LOGFILE"
+# 升级前停掉旧版本残留进程, 否则旧 uvicorn (--host ::) 会继续占住 18080,
+# start 因端口被占而跳过, 导致新代码 (0.0.0.0 绑定) 永不生效
+if [ -f "$TRIM_PKGDIR/cmd/main" ]; then
+  "$TRIM_PKGDIR/cmd/main" stop 2>/dev/null || true
+fi
 # Re-run install logic for new dependencies
 if [ -f "$TRIM_APPDEST/src/.venv/bin/activate" ]; then
   source "$TRIM_APPDEST/src/.venv/bin/activate"

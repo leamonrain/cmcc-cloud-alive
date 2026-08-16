@@ -96,7 +96,7 @@ The `tests/` directory is gitignored. There are no unit tests. The project relie
 - `fpk/cmd/install_callback` creates a venv via `venv.create()` and `pip install -r src/requirements.txt`
 - `fpk/cmd/config/privilege` sets `run-as: package` (FNOS runs lifecycle scripts as root)
 - CGI proxy at `fpk/app/ui/proxy.py` is a fallback entry (PHP-style CGI → urllib → `127.0.0.1:18080`) — not the primary path
-- uvicorn binds to `::` (dual-stack IPv6+IPv4) in both `cmd/main` and `proxy.py` — ensures FNOS reverse proxy works regardless of IP version
+- uvicorn binds to `0.0.0.0` in both `cmd/main` and `proxy.py` — NOT `::`. fnOS's IPv4→v4-mapped IPv6 dual-stack is broken at system level (verified on NAS: `bind("::")` does not accept IPv4 connections anywhere); binding `::` makes the app unreachable over LAN IPv4 (connection refused). `0.0.0.0` guarantees IPv4 access for the FNOS reverse proxy
 - `fpk/cmd/main` uses `port_in_use()` / `pid_alive()` functions with `/proc` check (not `kill -0`) — see quirk above
 - `fpk/cmd/main` derives paths from `TRIM_APPDEST` env var — do not hardcode `/vol2/@appcenter/...` paths
 

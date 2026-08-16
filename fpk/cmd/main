@@ -28,13 +28,20 @@ case "$1" in
     cd "$APPDIR"
     if port_in_use; then
       PID=$(port_pid)
-      [ -n "$PID" ] && echo "$PID" > "$PIDFILE"
-      exit 0
+      # 校验占用 18080 的进程是否为本应用 uvicorn 且绑定 0.0.0.0。
+      # 旧版本残留进程 (--host ::, fnOS IPv4 双栈损坏时不可达) 会占住端口,
+      # 若直接 exit 0 则升级后新代码永不生效。参数不符时强制替换。
+      if [ -n "$PID" ] && grep -aq -- "--host 0.0.0.0" "/proc/$PID/cmdline" 2>/dev/null; then
+        echo "$PID" > "$PIDFILE"
+        exit 0
+      fi
+      [ -n "$PID" ] && kill "$PID" 2>/dev/null || true
+      sleep 1
     fi
     PID_OLD=$(cat "$PIDFILE" 2>/dev/null) || true
     if ! pid_alive "$PID_OLD"; then
       nohup "$UVICORN_BIN" cmcc_cloud_alive.webui.app:app \
-        --host :: --port "$PORT" \
+        --host 0.0.0.0 --port "$PORT" \
         --workers 1 --log-level info > "$PKGVAR/uvicorn.log" 2>&1 &
       echo $! > "$PIDFILE"
     fi

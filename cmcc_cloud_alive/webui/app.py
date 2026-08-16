@@ -354,7 +354,6 @@ class OptionalTokenMiddleware(BaseHTTPMiddleware):
     - no token configured → open access (auth disabled)
     - token configured → require valid Bearer / x-api-token / ?token=
     """
-
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
         # Always open: health aliases (compose/X2/T3) + static + root shell + auth bootstrap
@@ -389,6 +388,62 @@ class OptionalTokenMiddleware(BaseHTTPMiddleware):
                 401,
                 next_step="请在登录门输入正确访问密钥，或在请求头携带 Bearer / x-api-token",
             )
+        return await call_next(request)
+
+
+class GatewayPrefixMiddleware(BaseHTTPMiddleware):
+    """Strip the fnOS unified-gateway prefix so internal routes stay clean.
+
+    fnOS serves third-party apps at ``/app/<AppName>`` (e.g.
+    ``/app/CMCCCloudAlive.Main``) and forwards the request path with the prefix
+    intact to the app's service port (18080). Without stripping, every route
+    here 404s and the SPA cannot load through the gateway. The stripped prefix
+    is recorded in ``scope["root_path"]`` so the shell can emit a matching
+    ``<base href>`` for relative assets. Direct (port) access is untouched.
+    """
+
+    @staticmethod
+    def _resolve_prefix(scope: Dict[str, Any]) -> str:
+        raw_headers = scope.get("headers") or []
+        for key, value in raw_headers:
+            if key == b"x-forwarded-prefix":
+                return value.decode("latin-1").rstrip("/")
+        path = scope.get("path") or ""
+        default = os.environ.get("CMCC_GATEWAY_PREFIX", "/app/CMCCCloudAlive.Main")
+        default = (default or "").strip().rstrip("/")
+        if not default:
+            return ""
+        if path == default or path.startswith(default + "/"):
+            return default
+        low_path = path.lower()
+        low_default = default.lower()
+        if low_path == low_default or low_path.startswith(low_default + "/"):
+            return path[: len(default)]
+        return ""
+
+    async def dispatch(self, request: Request, call_next):
+        scope = request.scope
+        prefix = self._resolve_prefix(scope)
+        if not prefix:
+            return await call_next(request)
+        path = scope.get("path") or "/"
+        if path == prefix:
+            stripped = "/"
+        else:
+            stripped = path[len(prefix):]
+            if not stripped.startswith("/"):
+                stripped = "/" + stripped
+        # Do NOT set scope["root_path"]: Starlette 1.x Mount/StaticFiles derive
+        # their sub-path from root_path and would double-strip/misresolve.
+        # Custom key carries the prefix to the shell endpoint for <base>.
+        scope["path"] = stripped
+        scope["gateway_prefix"] = prefix
+        raw = scope.get("raw_path")
+        if raw:
+            try:
+                scope["raw_path"] = raw[len(prefix.encode("latin-1")):]
+            except (TypeError, ValueError):
+                pass
         return await call_next(request)
 
 
@@ -2322,14 +2377,20 @@ async def logs_global(request: Request) -> JSONResponse:
 async def index(request: Request) -> Response:
     index_path = _STATIC_DIR / "index.html"
     if index_path.is_file():
-        # HARD_GATE#844: bust stale CSS/JS after layout hotfixes
-        return FileResponse(
-            index_path,
-            headers={
-                "Cache-Control": "no-cache, no-store, must-revalidate",
-                "Pragma": "no-cache",
-            },
-        )
+        headers = {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+        }
+        prefix = (request.scope.get("gateway_prefix") or "").rstrip("/")
+        if prefix:
+            # fnOS gateway mounts the shell under /app/CMCCCloudAlive.Main;
+            # relative assets (static/, api/) need a matching <base>.
+            html = index_path.read_text(encoding="utf-8")
+            base_tag = f'<base href="{prefix}/">'
+            if "<head>" in html and base_tag not in html:
+                html = html.replace("<head>", f"<head>\n  {base_tag}", 1)
+            return Response(html, media_type="text/html", headers=headers)
+        return FileResponse(index_path, headers=headers)
     return JSONResponse({"ok": True, "message": "static shell missing", "api": "/api/system/health"})
 
 
@@ -2383,7 +2444,23 @@ if _STATIC_DIR.is_dir():
     routes.append(Mount("/static", app=StaticFiles(directory=str(_STATIC_DIR)), name="static"))
 
 app = Starlette(debug=os.environ.get("CMCC_WEBUI_DEBUG") == "1", routes=routes)
+# Order: last added middleware runs first — strip gateway prefix before token gate.
 app.add_middleware(OptionalTokenMiddleware)
+app.add_middleware(GatewayPrefixMiddleware)
+
+
+def _start_restore_jobs() -> None:
+    """Relaunch keepalive jobs that were running before this process died."""
+    if not hasattr(ORCH, "restore_jobs"):
+        return
+    threading.Thread(
+        target=ORCH.restore_jobs,
+        name="orch-restore",
+        daemon=True,
+    ).start()
+
+
+_start_restore_jobs()
 
 
 def main() -> None:

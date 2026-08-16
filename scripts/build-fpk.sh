@@ -6,7 +6,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FPK_DIR="$REPO_ROOT/fpk"
-OUTPUT="${1:-$REPO_ROOT/CMCCCloudAlive-1.0.1.fpk}"
+OUTPUT="${1:-$REPO_ROOT/CMCCCloudAlive-1.1.3.fpk}"
 APPNAME="CMCCCloudAlive"
 
 cd "$FPK_DIR"

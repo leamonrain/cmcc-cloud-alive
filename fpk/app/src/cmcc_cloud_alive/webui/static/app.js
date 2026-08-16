@@ -87,7 +87,7 @@
   function persistClientProfile(pid, clientProfile) {
     if (!pid) return;
     const v = String(clientProfile || "linux").toLowerCase();
-    api("/api/profiles/" + encodeURIComponent(pid), {
+    api("api/profiles/" + encodeURIComponent(pid), {
       method: "PATCH",
       body: { clientProfile: v },
     })
@@ -238,7 +238,7 @@
 
   async function refreshAuthStatus() {
     try {
-      const st = await api("/api/auth/status");
+      const st = await api("api/auth/status");
       state.setupRequired = !!(st && st.setupRequired);
       state.tokenRequired = !!(st && st.tokenRequired);
       state.authEnabled = !!(st && (st.authEnabled != null ? st.authEnabled : st.tokenRequired));
@@ -282,7 +282,7 @@
     const btn = $("#gate-setup-ok");
     if (btn) btn.disabled = true;
     try {
-      const res = await api("/api/auth/setup", {
+      const res = await api("api/auth/setup", {
         method: "POST",
         body: JSON.stringify({ token: token }),
       });
@@ -319,7 +319,7 @@
     const btn = $("#gate-login-ok");
     if (btn) btn.disabled = true;
     try {
-      await api("/api/auth/login", {
+      await api("api/auth/login", {
         method: "POST",
         body: JSON.stringify({ token: token }),
       });
@@ -440,7 +440,7 @@
       }
     }
     try {
-      await api("/api/auth/change", {
+      await api("api/auth/change", {
         method: "POST",
         body: JSON.stringify({
           currentToken: cur || undefined,
@@ -481,7 +481,7 @@
       return;
     }
     try {
-      await api("/api/auth/disable", {
+      await api("api/auth/disable", {
         method: "POST",
         body: JSON.stringify({
           currentToken: cur || undefined,
@@ -567,7 +567,7 @@
     if (skipBtn) skipBtn.disabled = true;
     try {
       try {
-        await api("/api/auth/disable", { method: "POST", body: "{}" });
+        await api("api/auth/disable", { method: "POST", body: "{}" });
       } catch (e) {
         // API may not exist; treat as soft-skip and just enter UI.
       }
@@ -601,7 +601,7 @@ async function submitGateLogin() {
     const btn = $("#gate-login-ok");
     if (btn) btn.disabled = true;
     try {
-      await api("/api/auth/login", {
+      await api("api/auth/login", {
         method: "POST",
         body: JSON.stringify({ token: token }),
       });
@@ -722,7 +722,7 @@ async function submitGateLogin() {
       }
     }
     try {
-      await api("/api/auth/change", {
+      await api("api/auth/change", {
         method: "POST",
         body: JSON.stringify({
           currentToken: cur || undefined,
@@ -763,7 +763,7 @@ async function submitGateLogin() {
       return;
     }
     try {
-      await api("/api/auth/disable", {
+      await api("api/auth/disable", {
         method: "POST",
         body: JSON.stringify({
           currentToken: cur || undefined,
@@ -848,10 +848,10 @@ async function submitGateLogin() {
     try {
       // Prefer explicit disable if API exists; otherwise just enter with empty token.
       try {
-        await api("/api/auth/disable", { method: "POST", body: "{}" });
+        await api("api/auth/disable", { method: "POST", body: "{}" });
       } catch (e1) {
         try {
-          await api("/api/auth/clear", { method: "POST", body: "{}" });
+          await api("api/auth/clear", { method: "POST", body: "{}" });
         } catch (e2) {
           /* ok: already no token on server */
         }
@@ -2286,7 +2286,7 @@ function setComposerMsg(text, kind) {
 
   async function loadJobs() {
     try {
-      const data = await api("/api/jobs");
+      const data = await api("api/jobs");
       const jobs = (data && data.jobs) || data || [];
       const list = Array.isArray(jobs) ? jobs : [];
       state.jobsById = Object.create(null);
@@ -2306,7 +2306,7 @@ function setComposerMsg(text, kind) {
   async function loadProfiles(forceExpandNone) {
     try {
       await loadJobs();
-      const data = await api("/api/profiles");
+      const data = await api("api/profiles");
       /* HARD_GATE#851: never show draft profiles on timeline */
       state.profiles = ((data && data.profiles) || []).filter(function (p) {
         return p && !p.draft && p.draft !== true && p.draft !== 1 && p.draft !== "1";
@@ -2328,7 +2328,7 @@ function setComposerMsg(text, kind) {
     // HARD_GATE#855/#854 LOG_POLL_6S: pull + fingerprint paint; empty API must not erase fresher local SSE buffer
     try {
       const data = await api(
-        "/api/profiles/" + encodeURIComponent(pid) + "/logs"
+        "api/profiles/" + encodeURIComponent(pid) + "/logs"
       );
       const lines = (data && data.lines) || [];
       const prev = state.logs[pid] || [];
@@ -2442,7 +2442,7 @@ function setComposerMsg(text, kind) {
       await refreshAuthStatus();
     } catch (_) {}
     try {
-      const info = await api("/api/system/info");
+      const info = await api("api/system/info");
       if (info) {
         if (typeof info.tokenRequired === "boolean") state.tokenRequired = !!info.tokenRequired;
         if (typeof info.setupRequired === "boolean") state.setupRequired = !!info.setupRequired;
@@ -2539,7 +2539,7 @@ function setComposerMsg(text, kind) {
     try {
       // gate6: only POST /login when password present (username-only must not force re-auth)
       if (d.password) {
-        await api("/api/profiles/" + encodeURIComponent(pid) + "/login", {
+        await api("api/profiles/" + encodeURIComponent(pid) + "/login", {
           method: "POST",
           body: {
             username: d.username || undefined,
@@ -2549,7 +2549,7 @@ function setComposerMsg(text, kind) {
       }
       if (d.userServiceId || d.desktopLabel) {
         await api(
-          "/api/profiles/" + encodeURIComponent(pid) + "/select-desktop",
+          "api/profiles/" + encodeURIComponent(pid) + "/select-desktop",
           {
             method: "POST",
             body: {
@@ -2598,7 +2598,7 @@ function setComposerMsg(text, kind) {
     try {
       // gate6: only POST /login when password is present (avoid "username only" → 401 AUTH_FAILED)
       if (d.password) {
-        await api("/api/profiles/" + encodeURIComponent(pid) + "/login", {
+        await api("api/profiles/" + encodeURIComponent(pid) + "/login", {
           method: "POST",
           body: {
             username: d.username || undefined,
@@ -2609,7 +2609,7 @@ function setComposerMsg(text, kind) {
       // 登录后尽量刷新桌面列表 / 协议提示
       try {
         const deskData = await api(
-          "/api/profiles/" + encodeURIComponent(pid) + "/desktops"
+          "api/profiles/" + encodeURIComponent(pid) + "/desktops"
         );
         const list =
           (deskData && (deskData.desktops || deskData.items || deskData.list)) ||
@@ -2637,7 +2637,7 @@ function setComposerMsg(text, kind) {
       }
       if (d.userServiceId || d.desktopLabel) {
         await api(
-          "/api/profiles/" + encodeURIComponent(pid) + "/select-desktop",
+          "api/profiles/" + encodeURIComponent(pid) + "/select-desktop",
           {
             method: "POST",
             body: {
@@ -2654,7 +2654,7 @@ function setComposerMsg(text, kind) {
       const trafficSec = Number(d.trafficSec || 60);
       const durationSec = durationForMode(mode, trafficSec);
       const data = await api(
-        "/api/profiles/" + encodeURIComponent(pid) + "/jobs",
+        "api/profiles/" + encodeURIComponent(pid) + "/jobs",
         {
           method: "POST",
           body: {
@@ -2700,7 +2700,7 @@ function setComposerMsg(text, kind) {
     renderCards();
     try {
       await api(
-        "/api/profiles/" + encodeURIComponent(pid) + "/jobs/current",
+        "api/profiles/" + encodeURIComponent(pid) + "/jobs/current",
         { method: "DELETE" }
       );
       toast("已停止保活");
@@ -2759,7 +2759,7 @@ function setComposerMsg(text, kind) {
     renderCards();
     try {
       await api(
-        "/api/profiles/" + encodeURIComponent(pid) + "/jobs/current",
+        "api/profiles/" + encodeURIComponent(pid) + "/jobs/current",
         { method: "DELETE" }
       );
       toast("已清除保活线程");
@@ -2812,7 +2812,7 @@ function setComposerMsg(text, kind) {
     state.busy[pid] = true;
     renderCards();
     try {
-      await api("/api/profiles/" + encodeURIComponent(pid), {
+      await api("api/profiles/" + encodeURIComponent(pid), {
         method: "DELETE",
       });
       delete state.drafts[pid];
@@ -2864,7 +2864,7 @@ function setComposerMsg(text, kind) {
     renderCards();
     try {
       const data = await api(
-        "/api/profiles/" + encodeURIComponent(pid) + "/desktops"
+        "api/profiles/" + encodeURIComponent(pid) + "/desktops"
       );
       const list =
         (data && (data.desktops || data.items || data.list)) ||
@@ -2935,7 +2935,7 @@ function setComposerMsg(text, kind) {
       };
       // best-effort save so /desktops uses fresh creds
       try {
-        await api("/api/profiles/" + encodeURIComponent(pid), {
+        await api("api/profiles/" + encodeURIComponent(pid), {
           method: "PUT",
           body: JSON.stringify(body),
         });
@@ -3254,7 +3254,7 @@ function setComposerMsg(text, kind) {
     try {
       let pid = state.composer.profileId || "";
       if (!pid) {
-        const created = await api("/api/profiles", {
+        const created = await api("api/profiles", {
           method: "POST",
           body: {
             displayName: c.displayName || undefined,
@@ -3287,7 +3287,7 @@ function setComposerMsg(text, kind) {
       state.composer.loginMode = mode;
       state.composer.isSubAccount = isSub;
 
-      await api("/api/profiles/" + encodeURIComponent(pid) + "/login", {
+      await api("api/profiles/" + encodeURIComponent(pid) + "/login", {
         method: "POST",
         body: {
           username: c.username,
@@ -3305,7 +3305,7 @@ function setComposerMsg(text, kind) {
       let list = [];
       try {
         const deskData = await api(
-          "/api/profiles/" + encodeURIComponent(pid) + "/desktops"
+          "api/profiles/" + encodeURIComponent(pid) + "/desktops"
         );
         list =
           (deskData && (deskData.desktops || deskData.items || deskData.list)) ||
@@ -3381,7 +3381,7 @@ function setComposerMsg(text, kind) {
       let pid = state.composer.profileId || "";
       if (!pid) {
         // Not yet logged via 登录: create profile first (still require desktop)
-        const created = await api("/api/profiles", {
+        const created = await api("api/profiles", {
           method: "POST",
           body: {
             displayName: c.displayName || undefined,
@@ -3396,14 +3396,14 @@ function setComposerMsg(text, kind) {
         pid = p.id;
         state.composer.profileId = pid;
         ensureDraft(pid, p);
-        await api("/api/profiles/" + encodeURIComponent(pid) + "/login", {
+        await api("api/profiles/" + encodeURIComponent(pid) + "/login", {
           method: "POST",
           body: { username: c.username, password: c.password },
         });
         setComposerDesktopLock(true);
         try {
           const deskData = await api(
-            "/api/profiles/" + encodeURIComponent(pid) + "/desktops"
+            "api/profiles/" + encodeURIComponent(pid) + "/desktops"
           );
           const list =
             (deskData &&
@@ -3469,7 +3469,7 @@ function setComposerMsg(text, kind) {
 
       if (c.userServiceId || c.desktopLabel) {
         await api(
-          "/api/profiles/" + encodeURIComponent(pid) + "/select-desktop",
+          "api/profiles/" + encodeURIComponent(pid) + "/select-desktop",
           {
             method: "POST",
             body: {
@@ -3492,7 +3492,7 @@ function setComposerMsg(text, kind) {
       setComposerMsg("正在启动保活…", "ok");
       const mode = modeApi(c.mode);
       const trafficSec = Number(c.trafficSec || 60);
-      await api("/api/profiles/" + encodeURIComponent(pid) + "/jobs", {
+      await api("api/profiles/" + encodeURIComponent(pid) + "/jobs", {
         method: "POST",
         body: {
           protocol: (
@@ -3650,7 +3650,7 @@ function setComposerMsg(text, kind) {
         if (!pid) return;
         const btn = ev.target.closest("[data-act]");
         if (btn) btn.disabled = true;
-        api("/api/profiles/" + encodeURIComponent(pid) + "/logs", { method: "DELETE" })
+        api("api/profiles/" + encodeURIComponent(pid) + "/logs", { method: "DELETE" })
           .then(function (data) {
             state.logs[pid] = [];
     try { patchCardDeskStatus(pid); } catch (_e) {}
@@ -3852,7 +3852,7 @@ function setComposerMsg(text, kind) {
         return;
       }
       state.sseNeedTokenLogged = false;
-      let url = "/api/events";
+      let url = "api/events";
       if (token) {
         url +=
           (url.indexOf("?") >= 0 ? "&" : "?") +
@@ -3953,7 +3953,7 @@ function setComposerMsg(text, kind) {
     setInterval(async function () {
       try {
         await loadJobs();
-        const data = await api("/api/profiles");
+        const data = await api("api/profiles");
         const next = ((data && data.profiles) || []).filter(function (p) {
           return p && !p.draft && p.draft !== true && p.draft !== 1 && p.draft !== "1";
         });
@@ -4161,7 +4161,7 @@ function setComposerMsg(text, kind) {
             setComposerMsg("正在刷新官方云桌面列表…");
             setComposerDeskRefreshEnabled(true);
             const deskData = await api(
-              "/api/profiles/" + encodeURIComponent(pid) + "/desktops"
+              "api/profiles/" + encodeURIComponent(pid) + "/desktops"
             );
             const list =
               (deskData && (deskData.desktops || deskData.items || deskData.list)) ||
@@ -4223,7 +4223,7 @@ function setComposerMsg(text, kind) {
               hit.textContent = "刷新中…";
             }
             const deskData = await api(
-              "/api/profiles/" + encodeURIComponent(pid) + "/desktops"
+              "api/profiles/" + encodeURIComponent(pid) + "/desktops"
             );
             const list =
               (deskData && (deskData.desktops || deskData.items || deskData.list)) ||
